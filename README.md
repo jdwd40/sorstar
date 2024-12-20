@@ -1,50 +1,28 @@
-# React + TypeScript + Vite
+# **Sorstar MVP**
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+**Sorstar** is an economic and political simulator set in a small galaxy of 10 unique planets. The app allows players to explore planets, manage resources, establish trade routes, and influence planetary politics to build their empire. 
 
-Currently, two official plugins are available:
+This is the **MVP (Minimum Viable Product)** version of the app, focusing on core features such as:
+- Viewing a galaxy map with a list of planets.
+- Exploring planet details like resources, population, and military data.
+- A simple and intuitive player interface.
+- Responsive design for both desktop and mobile devices.
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react/README.md) uses [Babel](https://babeljs.io/) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+---
 
-## Expanding the ESLint configuration
+### **Current Status**
+This project is a **work in progress**. The MVP is being built in stages, starting with:
+1. Scaffolding and database connection.
+2. A basic galaxy map view displaying a list of planets.
+3. Planet stats and detailed information.
 
-If you are developing a production application, we recommend updating the configuration to enable type aware lint rules:
+Future updates will introduce interactive trade routes, resource management, and combat mechanics.
 
-- Configure the top-level `parserOptions` property like this:
+---
 
-```js
-export default tseslint.config({
-  languageOptions: {
-    // other options...
-    parserOptions: {
-      project: ['./tsconfig.node.json', './tsconfig.app.json'],
-      tsconfigRootDir: import.meta.dirname,
-    },
-  },
-})
-```
+### **Stay Tuned**
+The app will eventually go live, allowing you to experience the full galaxy simulation firsthand. For now, this repository serves as the development hub for *Sorstar*. 🚀
 
-- Replace `tseslint.configs.recommended` to `tseslint.configs.recommendedTypeChecked` or `tseslint.configs.strictTypeChecked`
-- Optionally add `...tseslint.configs.stylisticTypeChecked`
-- Install [eslint-plugin-react](https://github.com/jsx-eslint/eslint-plugin-react) and update the config:
+---
 
-```js
-// eslint.config.js
-import react from 'eslint-plugin-react'
-
-export default tseslint.config({
-  // Set the react version
-  settings: { react: { version: '18.3' } },
-  plugins: {
-    // Add the react plugin
-    react,
-  },
-  rules: {
-    // other rules...
-    // Enable its recommended rules
-    ...react.configs.recommended.rules,
-    ...react.configs['jsx-runtime'].rules,
-  },
-})
-```
+**Note:** If you'd like to follow the progress, keep an eye on this repository for updates!
