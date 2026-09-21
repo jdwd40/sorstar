@@ -2,6 +2,7 @@ import { useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { useGame } from '../context/GameContext'
 import Starfield from './Starfield'
+import AuthModal from './AuthModal'
 import { PLANET_MAP } from '../data/gameData'
 import { fmt, fmtMoney } from '../utils/format'
 import { soundEnabled, setSoundEnabled } from '../utils/sound'
@@ -25,6 +26,47 @@ function SoundToggle() {
     >
       {on ? '🔊' : '🔇'}
     </button>
+  )
+}
+
+function AccountControl() {
+  const { authUser, authAvailable, authBusy, logout } = useGame()
+  const [showAuth, setShowAuth] = useState(false)
+
+  if (!authAvailable) return null
+
+  if (authBusy) {
+    return <span className="text-xs text-slate-500">Syncing…</span>
+  }
+
+  if (authUser) {
+    return (
+      <div className="flex items-center gap-2 text-xs">
+        <span className="hidden sm:inline text-slate-400 max-w-[10rem] truncate" title={authUser.email}>
+          👤 {authUser.email}
+        </span>
+        <button
+          onClick={() => void logout()}
+          className="text-slate-400 hover:text-white underline underline-offset-2"
+          title={`Sign out of ${authUser.email}`}
+        >
+          Sign out
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <>
+      <button
+        onClick={() => setShowAuth(true)}
+        className="btn-ghost text-xs px-3 py-1.5"
+        title="Save this spaceship to an account"
+      >
+        Log in / Sign up
+      </button>
+      {showAuth && <AuthModal onClose={() => setShowAuth(false)} />}
+    </>
   )
 }
 
@@ -59,7 +101,10 @@ export default function Layout({ children }: LayoutProps) {
               </>
             )}
           </div>
-          <SoundToggle />
+          <div className="flex items-center gap-3">
+            <AccountControl />
+            <SoundToggle />
+          </div>
         </div>
       </header>
 

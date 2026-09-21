@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { CommodityId, GameState, ShipUpgradeType } from '../types/game'
-import { createGameStore, type GameStore } from '../services/gameStore'
+import { createGameStore, type AuthUser, type GameStore } from '../services/gameStore'
 import { advanceDay, buyCommodity, sellCommodity } from '../services/marketService'
 import { travel as travelService, type TravelResult } from '../services/travelService'
 import { buyUpgrade } from '../services/playerService'
@@ -17,6 +17,12 @@ interface GameContextValue {
   game: GameState | null
   saveExists: boolean
   ready: boolean
+  authUser: AuthUser | null
+  authAvailable: boolean
+  authBusy: boolean
+  login: (email: string, password: string) => Promise<string | null>
+  register: (email: string, password: string, name?: string) => Promise<string | null>
+  logout: () => Promise<void>
   startNewGame: () => void
   continueGame: () => void
   resetGame: () => void
@@ -47,8 +53,10 @@ export function GameProvider({ children }: { children: ReactNode }) {
   const [game, setGame] = useState<GameState | null>(null)
   const [saveExists, setSaveExists] = useState(false)
   const [ready, setReady] = useState(false)
+  const [authBusy, setAuthBusy] = useState(false)
   const storeRef = useRef<GameStore>(createGameStore())
   const gameRef = useRef<GameState | null>(null)
+  const [authUser, setAuthUser] = useState<AuthUser | null>(storeRef.current.auth?.user ?? null)
 
   useEffect(() => {
     let active = true
@@ -97,6 +105,67 @@ export function GameProvider({ children }: { children: ReactNode }) {
     setGame(null)
     setSaveExists(false)
   }, [])
+
+  const reloadFromStore = useCallback(async () => {
+    const loaded = await storeRef.current.load()
+    if (loaded) {
+      const stamped = stampProgress(loaded)
+      gameRef.current = stamped
+      setGame(stamped)
+      setSaveExists(true)
+    } else {
+      gameRef.current = null
+      setGame(null)
+      setSaveExists(false)
+    }
+  }, [])
+
+  const login = useCallback(
+    async (email: string, password: string): Promise<string | null> => {
+      if (!storeRef.current.auth) return 'Accounts are only available with a PocketBase backend.'
+      setAuthBusy(true)
+      try {
+        const err = await storeRef.current.auth.login(email, password)
+        if (err) return err
+        setAuthUser(storeRef.current.auth.user)
+        await reloadFromStore()
+        return null
+      } finally {
+        setAuthBusy(false)
+      }
+    },
+    [reloadFromStore],
+  )
+
+  const register = useCallback(
+    async (email: string, password: string, name?: string): Promise<string | null> => {
+      if (!storeRef.current.auth) return 'Accounts are only available with a PocketBase backend.'
+      setAuthBusy(true)
+      try {
+        const err = await storeRef.current.auth.register(email, password, name)
+        if (err) return err
+        setAuthUser(storeRef.current.auth.user)
+        return null
+      } finally {
+        setAuthBusy(false)
+      }
+    },
+    [],
+  )
+
+  const logout = useCallback(async () => {
+    if (!storeRef.current.auth) return
+    setAuthBusy(true)
+    try {
+      await storeRef.current.auth.logout()
+      setAuthUser(null)
+      // Switching identities means the in-memory game belongs to the previous
+      // account, so reload from the (fresh) anonymous identity.
+      await reloadFromStore()
+    } finally {
+      setAuthBusy(false)
+    }
+  }, [reloadFromStore])
 
   const dismissVictory = useCallback(() => {
     if (!gameRef.current) return
@@ -194,6 +263,12 @@ export function GameProvider({ children }: { children: ReactNode }) {
       game,
       saveExists,
       ready,
+      authUser,
+      authAvailable: storeRef.current.auth !== null,
+      authBusy,
+      login,
+      register,
+      logout,
       startNewGame,
       continueGame,
       resetGame,
@@ -208,6 +283,11 @@ export function GameProvider({ children }: { children: ReactNode }) {
       game,
       saveExists,
       ready,
+      authUser,
+      authBusy,
+      login,
+      register,
+      logout,
       startNewGame,
       continueGame,
       resetGame,

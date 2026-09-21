@@ -21,7 +21,7 @@ The loop: **Buy** a commodity at a planet where it's cheap → **Travel** to a p
 
 ## PocketBase persistence
 
-Saves are stored permanently on a PocketBase server instead of the browser's localStorage, so they survive cache clears and can live on a shared/hosted instance. Each browser gets its own anonymous PocketBase account on first use, so every device keeps its own save (a login/register UI can be added later on top of the same `users` auth).
+Saves are stored permanently on a PocketBase server instead of the browser's localStorage, so they survive cache clears and can live on a shared/hosted instance. Each browser gets its own anonymous PocketBase account on first use, so every device keeps its own save. Use **Log in / Sign up** in the header (also available while playing) to bind that save to an email — a new account adopts the browser's current game, and signing in on another device pulls up your account's save.
 
 Setup:
 
