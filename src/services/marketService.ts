@@ -6,7 +6,7 @@ import type {
   Markets,
   Planet,
 } from '../types/game'
-import { CARGO_UPGRADES, COMMODITY_MAP, PLANET_MAP } from '../data/gameData'
+import { COMMODITY_MAP, PLANET_MAP, cargoCapacityAtLevel } from '../data/gameData'
 
 export function hashString(str: string): number {
   let hash = 2166136261
@@ -51,7 +51,7 @@ export function marketPrice(
   return Math.max(1, Math.round(commodity.basePrice * factor * randomFactor(planet.id, commodity.id, day)))
 }
 
-export function priceDelta(listing: MarketListing): number {
+function priceDelta(listing: MarketListing): number {
   return listing.price - listing.prevPrice
 }
 
@@ -112,7 +112,7 @@ export function buyCommodity(
   if (!planet || !listing) return { state, error: 'No market here.' }
   if (qty <= 0) return { state, error: 'Enter a quantity first.' }
 
-  const capacity = cargoCapacityFor(state)
+  const capacity = cargoCapacityAtLevel(state.ship.cargoLevel)
   const used = cargoUsed(state)
   const space = capacity - used
   if (qty > space) return { state, error: `Not enough cargo space (${space} free).` }
@@ -148,7 +148,6 @@ export function buyCommodity(
       markets: nextMarkets,
       stats: {
         ...state.stats,
-        totalPurchases: state.stats.totalPurchases + cost,
         goodsBought: state.stats.goodsBought + qty,
       },
     },
@@ -191,7 +190,6 @@ export function sellCommodity(
       markets: nextMarkets,
       stats: {
         ...state.stats,
-        totalSales: state.stats.totalSales + proceeds,
         totalProfit: state.stats.totalProfit + profit,
         goodsSold: state.stats.goodsSold + qty,
       },
@@ -225,15 +223,10 @@ export function advanceDay(state: GameState): GameState {
   return { ...state, day, markets: nextMarkets }
 }
 
-export function cargoCapacityFor(state: GameState): number {
-  const tier = CARGO_UPGRADES.find((t) => t.level === state.ship.cargoLevel)
-  return tier ? tier.capacity : CARGO_UPGRADES[0].capacity
-}
-
 export function cargoUsed(state: GameState): number {
   return Object.values(state.cargo).reduce((sum, qty) => sum + qty, 0)
 }
 
 export function cargoFree(state: GameState): number {
-  return Math.max(0, cargoCapacityFor(state) - cargoUsed(state))
+  return Math.max(0, cargoCapacityAtLevel(state.ship.cargoLevel) - cargoUsed(state))
 }

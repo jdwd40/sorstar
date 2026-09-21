@@ -36,7 +36,7 @@ export default function Layout({ children }: LayoutProps) {
     <div className="min-h-screen flex flex-col">
       <Starfield />
       <header className="border-b border-slate-800/80 bg-slate-950/60 backdrop-blur-sm sticky top-0 z-40">
-        <div className="max-w-6xl mx-auto px-4 h-14 flex items-center justify-between">
+        <div className="max-w-6xl mx-auto px-4 h-14 flex items-center justify-between gap-2">
           <Link to={game ? '/game' : '/'} className="flex items-center gap-2">
             <span className="text-2xl">🚀</span>
             <span className="text-xl font-bold tracking-wide text-indigo-300 text-glow">
@@ -58,11 +58,8 @@ export default function Layout({ children }: LayoutProps) {
                 </span>
               </>
             )}
-            <SoundToggle />
           </div>
-          <div className="sm:hidden">
-            <SoundToggle />
-          </div>
+          <SoundToggle />
         </div>
       </header>
 

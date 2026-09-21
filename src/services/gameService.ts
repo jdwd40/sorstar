@@ -46,8 +46,6 @@ export function createNewGame(version = GAME_VERSION): GameState {
     markets: createMarkets(PLANETS.map((p) => p.id), day),
     stats: {
       totalProfit: 0,
-      totalPurchases: 0,
-      totalSales: 0,
       goodsBought: 0,
       goodsSold: 0,
       tripsMade: 0,

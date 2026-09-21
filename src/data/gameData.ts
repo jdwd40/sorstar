@@ -101,7 +101,6 @@ const planet = (
   name: string,
   type: PlanetType,
   icon: string,
-  color: string,
   description: string,
   position: { x: number; y: number },
   priceMods: Partial<Record<CommodityId, number>>,
@@ -111,7 +110,6 @@ const planet = (
   name,
   type,
   icon,
-  color,
   description,
   position,
   priceMods: mods(priceMods),
@@ -124,7 +122,6 @@ export const PLANETS: Planet[] = [
     'Eden Prime',
     'agricultural',
     '🌾',
-    'emerald',
     'A breadbasket world of lush farms. Grain and produce flow out to the whole sector.',
     { x: 30, y: 65 },
     { food: 0.65, water: 0.7, electronics: 1.5, luxury: 1.5, medicine: 1.3, metals: 1.25, crystals: 1.55 },
@@ -135,7 +132,6 @@ export const PLANETS: Planet[] = [
     'Korbant Reach',
     'mining',
     '⛏️',
-    'amber',
     'Harsh canyonworld furrowed by strip mines. Metals fuel the sector economy.',
     { x: 75, y: 25 },
     { metals: 0.55, fuel: 0.7, food: 1.4, water: 1.3, electronics: 1.55, medicine: 1.5, luxury: 1.6, crystals: 1.5 },
@@ -146,7 +142,6 @@ export const PLANETS: Planet[] = [
     'Nextera',
     'technological',
     '🔬',
-    'cyan',
     'A gleaming research hub. Cutting-edge electronics and medicine are forged here.',
     { x: 70, y: 78 },
     { electronics: 0.55, medicine: 0.65, food: 1.4, water: 1.35, metals: 1.4, fuel: 1.3, luxury: 1.2, crystals: 0.9 },
@@ -157,7 +152,6 @@ export const PLANETS: Planet[] = [
     'Aurelia Prime',
     'wealthy',
     '🏛️',
-    'violet',
     'The glittering capital of the sector. Wealthy citizens pay handsomely for the finer things.',
     { x: 50, y: 20 },
     { luxury: 0.6, crystals: 0.75, food: 1.5, water: 1.4, metals: 1.3, fuel: 1.2, electronics: 0.95, medicine: 0.9 },
@@ -168,7 +162,6 @@ export const PLANETS: Planet[] = [
     'Vorgon Foundry',
     'industrial',
     '🏭',
-    'slate',
     'A smog-choked factory world. Its automated foundries churn out heavy machinery.',
     { x: 25, y: 30 },
     { metals: 0.6, fuel: 0.65, electronics: 0.9, food: 1.35, water: 1.3, medicine: 1.4, luxury: 1.6, crystals: 1.5 },
@@ -179,7 +172,6 @@ export const PLANETS: Planet[] = [
     'Drax-7',
     'frontier',
     '🚀',
-    'orange',
     'A rough-and-tumble frontier station. Everything is scarce here except dust and trouble.',
     { x: 15, y: 85 },
     { water: 1.55, food: 1.5, electronics: 1.7, medicine: 1.7, luxury: 1.8, metals: 1.25, fuel: 1.4, crystals: 1.4 },
@@ -190,7 +182,6 @@ export const PLANETS: Planet[] = [
     'Ironreach Colony',
     'mining',
     '⛏️',
-    'amber',
     'A young asteroid colony with rich mineral veins and hungry miners.',
     { x: 55, y: 55 },
     { metals: 0.5, fuel: 0.8, food: 1.4, water: 1.4, electronics: 1.5, medicine: 1.5, luxury: 1.6, crystals: 1.35 },
@@ -201,7 +192,6 @@ export const PLANETS: Planet[] = [
     'Straton Core',
     'technological',
     '🔬',
-    'cyan',
     'The densest orbital network in the sector, home to megacorp R&D labs.',
     { x: 78, y: 48 },
     { electronics: 0.6, medicine: 0.7, luxury: 0.8, crystals: 0.8, food: 1.5, water: 1.4, metals: 1.3, fuel: 1.3 },
@@ -212,7 +202,6 @@ export const PLANETS: Planet[] = [
     'Telos',
     'agricultural',
     '🌾',
-    'emerald',
     'A terraformed colony of orchards and fisheries, exporting premium produce.',
     { x: 12, y: 12 },
     { food: 0.55, water: 0.65, electronics: 1.6, medicine: 1.45, luxury: 1.5, metals: 1.35, fuel: 1.2, crystals: 1.1 },
@@ -252,7 +241,6 @@ export interface EngineTier {
 export interface NavTier {
   level: number
   cost: number
-  enabled: boolean
 }
 
 export const CARGO_UPGRADES: CargoTier[] = [
@@ -274,8 +262,8 @@ export const ENGINE_UPGRADES: EngineTier[] = [
 ]
 
 export const NAV_UPGRADES: NavTier[] = [
-  { level: 0, cost: 0, enabled: false },
-  { level: 1, cost: 3500, enabled: true },
+  { level: 0, cost: 0 },
+  { level: 1, cost: 3500 },
 ]
 
 export const UPGRADE_META: Record<
@@ -309,25 +297,7 @@ export function fuelCostAtLevel(level: number): number {
   return tier ? tier.fuelPerLy : ENGINE_UPGRADES[0].fuelPerLy
 }
 
-export function upgradeCost(type: ShipUpgradeType, level: number): number {
-  switch (type) {
-    case 'cargo': {
-      const tier = CARGO_UPGRADES.find((t) => t.level === level)
-      return tier ? tier.cost : 0
-    }
-    case 'engine': {
-      const tier = ENGINE_UPGRADES.find((t) => t.level === level)
-      return tier ? tier.cost : 0
-    }
-    case 'nav': {
-      const tier = NAV_UPGRADES.find((t) => t.level === level)
-      return tier ? tier.cost : 0
-    }
-  }
-}
-
 export const STARTING_SHIP = {
-  id: 'starhopper',
   name: 'Starhopper',
   className: 'Light Freighter Mark I',
   cargoLevel: 0,

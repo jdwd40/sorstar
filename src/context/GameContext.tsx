@@ -30,8 +30,6 @@ interface GameContextValue {
 
 const GameContext = createContext<GameContextValue | undefined>(undefined)
 
-export { GameContext }
-
 function stampProgress(next: GameState): GameState {
   const nw = netWorth(next)
   let stats = next.stats
@@ -43,10 +41,6 @@ function stampProgress(next: GameState): GameState {
   }
   if (stats === next.stats) return next
   return { ...next, stats }
-}
-
-function logPush(state: GameState, icon: string, text: string): GameState {
-  return withLog(state, icon, text)
 }
 
 export function GameProvider({ children }: { children: ReactNode }) {
@@ -109,7 +103,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
       const planet = PLANET_MAP[result.state.planetId]
       const pricePaid = stateBefore.markets[stateBefore.planetId][commodityId].price
       commit(
-        logPush(
+        withLog(
           result.state,
           '🛒',
           `Bought ${qty}× ${commodity.name} for ${qty * pricePaid} cr${planet ? ` at ${planet.name}` : ''}.`,
@@ -132,7 +126,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
       const profit = (price - basis) * qty
       const planet = PLANET_MAP[result.state.planetId]
       commit(
-        logPush(
+        withLog(
           result.state,
           '💰',
           `Sold ${qty}× ${commodity.name} for ${qty * price} cr${planet ? ` at ${planet.name}` : ''}${profit >= 0 ? ` (+${profit} cr profit)` : ` (${profit} cr)`}.`,
@@ -147,7 +141,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
     if (!gameRef.current) return { ok: false, message: 'No active game.' }
     const state = gameRef.current
     const planet = PLANET_MAP[state.planetId]
-    commit(logPush(advanceDay(state), '🌓', `A day passes at ${planet ? planet.name : 'orbit'}. Markets re-open.`))
+    commit(withLog(advanceDay(state), '🌓', `A day passes at ${planet ? planet.name : 'orbit'}. Markets re-open.`))
     return { ok: true, message: `Day ${state.day + 1} begins.` }
   }, [commit])
 
@@ -157,7 +151,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
       const result = travelService(gameRef.current, destId)
       if (result.error) return { ok: false, message: result.error }
       commit(
-        logPush(
+        withLog(
           result.state,
           '🚀',
           `Jumped ${result.distanceLy} ly from ${result.fromName} to ${result.toName} (${result.fuelCost} cr fuel, ${result.days} day${(result.days ?? 0) > 1 ? 's' : ''}).`,
@@ -174,7 +168,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
       const result = buyUpgrade(gameRef.current, type)
       if (result.error || !result.state) return { ok: false, message: result.error ?? 'Upgrade failed.' }
       commit(
-        logPush(
+        withLog(
           result.state,
           '🧰',
           result.upgradeName ? `${result.upgradeName} installed.` : 'Ship upgraded.',

@@ -1,5 +1,5 @@
 import type { CommodityId, GameState } from '../types/game'
-import { CARGO_UPGRADES, COMMODITY_MAP, PLANETS, PLANET_MAP } from '../data/gameData'
+import { COMMODITY_MAP, PLANETS, PLANET_MAP, cargoCapacityAtLevel } from '../data/gameData'
 import { travelCost } from './travelService'
 
 export interface TradeLead {
@@ -33,8 +33,7 @@ export function getTradeLeads(state: GameState): TradeLead[] {
   const prices = state.markets[state.planetId]
   if (!prices) return []
 
-  const cargoTier = CARGO_UPGRADES.find((t) => t.level === state.ship.cargoLevel)
-  const capacity = cargoTier ? cargoTier.capacity : CARGO_UPGRADES[0].capacity
+  const capacity = cargoCapacityAtLevel(state.ship.cargoLevel)
   const cargoUsed = Object.values(state.cargo).reduce((sum, q) => sum + q, 0)
   const freeSpace = Math.max(0, capacity - cargoUsed)
 

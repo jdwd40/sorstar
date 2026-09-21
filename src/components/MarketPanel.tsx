@@ -1,9 +1,9 @@
 import { useMemo, useState } from 'react'
 import type { CommodityId, GameState, Planet } from '../types/game'
 import {
-  CARGO_UPGRADES,
   COMMODITIES,
   PLANET_TYPE_META,
+  cargoCapacityAtLevel,
 } from '../data/gameData'
 import { cargoFree, cargoUsed, priceDirection } from '../services/marketService'
 import { fmt, fmtMoney } from '../utils/format'
@@ -45,7 +45,7 @@ const ARROW_COLOR: Record<'up' | 'down' | 'flat', string> = {
 
 export default function MarketPanel({ game, planet, buy, sell, waitDay }: MarketPanelProps) {
   const [quantities, setQuantities] = useState<Record<string, number>>({})
-  const capacity = CARGO_UPGRADES.find((t) => t.level === game.ship.cargoLevel)?.capacity ?? 0
+  const capacity = cargoCapacityAtLevel(game.ship.cargoLevel)
   const used = cargoUsed(game)
   const free = cargoFree(game)
   const meta = PLANET_TYPE_META[planet.type]

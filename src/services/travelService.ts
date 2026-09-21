@@ -17,13 +17,6 @@ export function travelCost(state: GameState, destId: string): number {
   return Math.max(1, Math.round(ly * fuelPerLy))
 }
 
-export function travelDays(state: GameState, destId: string): number {
-  const from = PLANET_MAP[state.planetId]
-  const to = PLANET_MAP[destId]
-  if (!from || !to) return 1
-  return distanceBetween(from, to)
-}
-
 export function canTravel(state: GameState, destId: string): { ok: boolean; reason?: string } {
   const from = PLANET_MAP[state.planetId]
   const to = PLANET_MAP[destId]
@@ -39,8 +32,6 @@ export function canTravel(state: GameState, destId: string): { ok: boolean; reas
 export interface TravelResult {
   state: GameState
   error?: string
-  traveled: boolean
-  fromId?: string
   toId?: string
   fromName?: string
   toName?: string
@@ -57,14 +48,14 @@ export function travel(
   const from = PLANET_MAP[state.planetId]
   const to = PLANET_MAP[destId]
   if (!from || !to || from.id === to.id) {
-    return { state, error: 'Invalid destination.', traveled: false }
+    return { state, error: 'Invalid destination.' }
   }
   const cost = travelCost(state, destId)
   if (cost > state.credits) {
-    return { state, error: `Not enough credits for fuel (${cost} cr).`, traveled: false }
+    return { state, error: `Not enough credits for fuel (${cost} cr).` }
   }
 
-  const days = travelDays(state, destId)
+  const days = distanceBetween(from, to)
   let next: GameState = {
     ...state,
     credits: state.credits - cost,
@@ -79,8 +70,6 @@ export function travel(
   }
   return {
     state: next,
-    traveled: true,
-    fromId: from.id,
     toId: to.id,
     fromName: from.name,
     toName: to.name,

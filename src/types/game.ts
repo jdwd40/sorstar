@@ -29,7 +29,6 @@ export interface Planet {
   name: string
   type: PlanetType
   icon: string
-  color: string
   description: string
   position: { x: number; y: number }
   priceMods: Record<CommodityId, number>
@@ -49,7 +48,6 @@ export type Markets = Record<string, Record<CommodityId, MarketListing>>
 export type ShipUpgradeType = 'cargo' | 'engine' | 'nav'
 
 export interface Ship {
-  id: string
   name: string
   className: string
   cargoLevel: number
@@ -70,8 +68,6 @@ export interface Cargo {
 
 export interface Stats {
   totalProfit: number
-  totalPurchases: number
-  totalSales: number
   goodsBought: number
   goodsSold: number
   tripsMade: number
