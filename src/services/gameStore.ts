@@ -1,49 +1,18 @@
-import type { GameState, MarketListing } from '../types/game'
-import { GAME_VERSION, SAVE_KEY } from '../data/gameData'
-
-function migrate(raw: GameState): GameState {
-  let state = { ...raw }
-
-  if (state.version < 2) {
-    const markets: GameState['markets'] = {}
-    for (const [pid, record] of Object.entries(state.markets)) {
-      const next: Record<string, MarketListing> = {}
-      for (const [cid, listing] of Object.entries(record)) {
-        next[cid] = { ...listing, prevPrice: listing.price }
-      }
-      markets[pid] = next as GameState['markets'][string]
-    }
-    state = {
-      ...state,
-      version: 2,
-      markets,
-      log: Array.isArray(state.log) ? state.log : [],
-      stats: {
-        ...state.stats,
-        maxNetWorth: state.stats.maxNetWorth ?? 0,
-        victory: state.stats.victory ?? false,
-        victorySeen: state.stats.victorySeen ?? false,
-        victoryDay: state.stats.victoryDay ?? null,
-      },
-    }
-  }
-
-  if (state.version < GAME_VERSION) {
-    state = { ...state, version: GAME_VERSION }
-  }
-  return state
-}
+import type { GameState } from '../types/game'
+import { SAVE_KEY } from '../data/gameData'
+import { migrate } from './migrate'
+import { PocketBaseGameStore } from './pocketBaseStore'
 
 export interface GameStore {
-  load(): GameState | null
-  save(state: GameState): void
-  clear(): void
+  load(): Promise<GameState | null>
+  save(state: GameState): Promise<void>
+  clear(): Promise<void>
 }
 
 export class LocalStorageGameStore implements GameStore {
   constructor(private readonly key: string = SAVE_KEY) {}
 
-  load(): GameState | null {
+  async load(): Promise<GameState | null> {
     try {
       const raw = window.localStorage.getItem(this.key)
       if (!raw) return null
@@ -57,7 +26,7 @@ export class LocalStorageGameStore implements GameStore {
     }
   }
 
-  save(state: GameState): void {
+  async save(state: GameState): Promise<void> {
     try {
       window.localStorage.setItem(this.key, JSON.stringify(state))
     } catch {
@@ -65,7 +34,7 @@ export class LocalStorageGameStore implements GameStore {
     }
   }
 
-  clear(): void {
+  async clear(): Promise<void> {
     try {
       window.localStorage.removeItem(this.key)
     } catch {
@@ -75,5 +44,9 @@ export class LocalStorageGameStore implements GameStore {
 }
 
 export function createGameStore(): GameStore {
+  const pbUrl = import.meta.env.VITE_PB_URL as string | undefined
+  if (pbUrl) {
+    return new PocketBaseGameStore(pbUrl)
+  }
   return new LocalStorageGameStore()
 }

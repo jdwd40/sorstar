@@ -51,20 +51,30 @@ export function GameProvider({ children }: { children: ReactNode }) {
   const gameRef = useRef<GameState | null>(null)
 
   useEffect(() => {
-    const loaded = storeRef.current.load()
-    if (loaded) {
-      gameRef.current = stampProgress(loaded)
-      setGame(stampProgress(loaded))
-      setSaveExists(true)
+    let active = true
+    ;(async () => {
+      try {
+        const loaded = await storeRef.current.load()
+        if (!active) return
+        if (loaded) {
+          gameRef.current = stampProgress(loaded)
+          setGame(stampProgress(loaded))
+          setSaveExists(true)
+        }
+      } finally {
+        if (active) setReady(true)
+      }
+    })()
+    return () => {
+      active = false
     }
-    setReady(true)
   }, [])
 
   const commit = useCallback((next: GameState) => {
     const stamped = stampProgress(next)
     gameRef.current = stamped
     setGame(stamped)
-    storeRef.current.save(stamped)
+    void storeRef.current.save(stamped).catch((err) => console.error('Failed to save game:', err))
   }, [])
 
   const startNewGame = useCallback(() => {
@@ -72,7 +82,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
     gameRef.current = next
     setGame(next)
     setSaveExists(true)
-    storeRef.current.save(next)
+    void storeRef.current.save(next).catch((err) => console.error('Failed to save game:', err))
   }, [])
 
   const continueGame = useCallback(() => {
@@ -82,7 +92,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const resetGame = useCallback(() => {
-    storeRef.current.clear()
+    void storeRef.current.clear().catch((err) => console.error('Failed to clear save:', err))
     gameRef.current = null
     setGame(null)
     setSaveExists(false)
