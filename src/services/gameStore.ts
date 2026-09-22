@@ -1,7 +1,43 @@
-import type { GameState } from '../types/game'
-import { SAVE_KEY } from '../data/gameData'
+import type { CommodityId, GameState, Ship } from '../types/game'
+import { COMMODITIES, SAVE_KEY } from '../data/gameData'
 import { migrate } from './migrate'
 import { PocketBaseGameStore } from './pocketBaseStore'
+
+const LEGACY_SAVE_KEY = 'sorstar.save.v1'
+
+const isFiniteNumber = (n: unknown): n is number =>
+  typeof n === 'number' && Number.isFinite(n)
+
+function isValidCargo(cargo: unknown): cargo is GameState['cargo'] {
+  if (!cargo || typeof cargo !== 'object') return false
+  const c = cargo as Record<CommodityId, unknown>
+  return COMMODITIES.every(({ id }) => isFiniteNumber(c[id]))
+}
+
+function isValidShip(ship: unknown): ship is Ship {
+  if (!ship || typeof ship !== 'object') return false
+  const s = ship as Record<string, unknown>
+  return (
+    isFiniteNumber(s.cargoLevel) &&
+    isFiniteNumber(s.engineLevel) &&
+    isFiniteNumber(s.navLevel)
+  )
+}
+
+function isValidState(raw: unknown): raw is GameState {
+  if (!raw || typeof raw !== 'object') return false
+  const s = raw as GameState
+  return (
+    isFiniteNumber(s.version) &&
+    isFiniteNumber(s.day) &&
+    isFiniteNumber(s.credits) &&
+    typeof s.planetId === 'string' &&
+    isValidShip(s.ship) &&
+    isValidCargo(s.cargo) &&
+    !!s.markets && typeof s.markets === 'object' &&
+    !!s.stats && typeof s.stats === 'object'
+  )
+}
 
 export interface AuthUser {
   id: string
@@ -44,14 +80,25 @@ export class LocalStorageGameStore implements GameStore {
 
   async load(): Promise<GameState | null> {
     try {
-      const raw = window.localStorage.getItem(this.key)
+      let raw = window.localStorage.getItem(this.key)
+      let fromLegacy = false
+      if (!raw) {
+        raw = window.localStorage.getItem(LEGACY_SAVE_KEY)
+        fromLegacy = raw !== null
+      }
       if (!raw) return null
-      const parsed = JSON.parse(raw) as GameState
-      if (!parsed || typeof parsed !== 'object' || parsed.version == null) {
+      const parsed = JSON.parse(raw) as unknown
+      if (!isValidState(parsed)) {
+        console.error('[sorstar] Ignoring invalid or corrupt save.')
         return null
       }
-      return migrate(parsed)
-    } catch {
+      const migrated = migrate(parsed)
+      if (fromLegacy || migrated !== parsed) {
+        this.save(migrated)
+      }
+      return migrated
+    } catch (err) {
+      console.error('[sorstar] Failed to load save:', err)
       return null
     }
   }

@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { GameState, Planet } from '../types/game'
 import { PLANET_MAP, PLANETS, PLANET_TYPE_META, fuelCostAtLevel } from '../data/gameData'
 import { canTravel, distanceBetween, travelCost } from '../services/travelService'
@@ -105,6 +105,14 @@ export default function TravelPanel({ game, travel }: TravelPanelProps) {
   const [arrival, setArrival] = useState<TravelResult | null>(null)
   const [mapError, setMapError] = useState<string | null>(null)
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const jumpTimersRef = useRef<ReturnType<typeof setTimeout>[]>([])
+
+  useEffect(() => {
+    const timers = jumpTimersRef.current
+    return () => {
+      timers.forEach((t) => clearTimeout(t))
+    }
+  }, [])
 
   const destinations = useMemo(() => {
     return PLANETS.filter((p) => p.id !== game.planetId).map((planet) => {
@@ -146,19 +154,22 @@ export default function TravelPanel({ game, travel }: TravelPanelProps) {
     setJumpTo(dest)
     setPhase('charging')
     sound.travel()
-    window.setTimeout(() => setPhase('jumping'), 450)
-    window.setTimeout(() => {
-      const res = travel(dest.id)
-      if (!res.ok) {
+    jumpTimersRef.current.push(window.setTimeout(() => setPhase('jumping'), 450))
+    jumpTimersRef.current.push(
+      window.setTimeout(() => {
+        jumpTimersRef.current = []
+        const res = travel(dest.id)
+        if (!res.ok) {
+          setPhase('idle')
+          setJumpTo(null)
+          setMapError(res.message)
+          return
+        }
         setPhase('idle')
         setJumpTo(null)
-        setMapError(res.message)
-        return
-      }
-      setPhase('idle')
-      setJumpTo(null)
-      setArrival(res.info ?? null)
-    }, 1300)
+        setArrival(res.info ?? null)
+      }, 1300),
+    )
   }
 
   const mapX = (x: number) => `${x}%`

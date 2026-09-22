@@ -7,12 +7,13 @@ import { netWorth } from '../services/gameService'
 import { fmt, fmtMoney } from '../utils/format'
 
 export default function StartPage() {
-  const { game, saveExists, startNewGame, continueGame, resetGame } = useGame()
+  const { game, startNewGame, resetGame } = useGame()
   const navigate = useNavigate()
   const [confirmReset, setConfirmReset] = useState(false)
+  const hasSave = game !== null
 
   const handleNewGame = () => {
-    if (saveExists) {
+    if (hasSave) {
       if (!window.confirm('Start a new game? Your current save will be overwritten.')) return
     }
     startNewGame()
@@ -20,7 +21,6 @@ export default function StartPage() {
   }
 
   const handleContinue = () => {
-    continueGame()
     navigate('/game')
   }
 
@@ -47,7 +47,7 @@ export default function StartPage() {
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 w-full max-w-2xl">
           <button onClick={handleNewGame} className="btn-primary text-lg py-4">
-            {saveExists ? 'New Game' : 'Start Trading'}
+            {hasSave ? 'New Game' : 'Start Trading'}
           </button>
           <button
             onClick={handleContinue}

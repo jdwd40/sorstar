@@ -124,16 +124,12 @@ export function buyCommodity(
   const ownedBefore = state.cargo[commodityId]
   const ownedAfter = ownedBefore + qty
   const basisBefore = state.costBasis[commodityId] ?? listing.price
-  const costBasisAfter =
-    ownedBefore + qty > 0
-      ? (basisBefore * ownedBefore + cost) / ownedAfter
-      : listing.price
+  const costBasisAfter = (basisBefore * ownedBefore + cost) / ownedAfter
 
   const nextCargo = { ...state.cargo, [commodityId]: ownedAfter }
   const nextCostBasis = { ...state.costBasis, [commodityId]: costBasisAfter }
   const nextMarket = { ...state.markets[state.planetId], [commodityId]: { ...listing, stock: listing.stock - qty } }
   refreshPrice(nextMarket, state.planetId, commodityId, state.day)
-  nextMarket[commodityId].prevPrice = nextMarket[commodityId].price
   const nextMarkets = {
     ...state.markets,
     [state.planetId]: nextMarket,
@@ -167,16 +163,16 @@ export function sellCommodity(
   const owned = state.cargo[commodityId]
   if (owned < qty) return { state, error: `You only have ${owned} ${COMMODITY_MAP[commodityId].name}.` }
 
-  const proceeds = qty * listing.price
-  const basis = state.costBasis[commodityId] ?? listing.price
-  const profit = proceeds - basis * qty
   const nextStock = Math.min(listing.stockMax, listing.stock + qty)
   const nextMarket = {
     ...state.markets[state.planetId],
     [commodityId]: { ...listing, stock: nextStock },
   }
   refreshPrice(nextMarket, state.planetId, commodityId, state.day)
-  nextMarket[commodityId].prevPrice = nextMarket[commodityId].price
+  const sellPrice = nextMarket[commodityId].price
+  const proceeds = qty * sellPrice
+  const basis = state.costBasis[commodityId] ?? listing.price
+  const profit = proceeds - basis * qty
   const nextMarkets = {
     ...state.markets,
     [state.planetId]: nextMarket,

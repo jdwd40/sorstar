@@ -10,7 +10,7 @@ export const GAME_TARGET_NET_WORTH = 100_000
 export const GAME_VERSION = 2
 export const STARTING_CREDITS = 1200
 export const STARTING_PLANET = 'eden'
-export const SAVE_KEY = 'sorstar.save.v1'
+export const SAVE_KEY = 'sorstar.save.v2'
 export const LOG_LIMIT = 80
 
 export const COMMODITIES: Commodity[] = [

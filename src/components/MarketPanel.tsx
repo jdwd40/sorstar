@@ -44,7 +44,7 @@ const ARROW_COLOR: Record<'up' | 'down' | 'flat', string> = {
 }
 
 export default function MarketPanel({ game, planet, buy, sell, waitDay }: MarketPanelProps) {
-  const [quantities, setQuantities] = useState<Record<string, number>>({})
+  const [inputs, setInputs] = useState<Record<string, string>>({})
   const capacity = cargoCapacityAtLevel(game.ship.cargoLevel)
   const used = cargoUsed(game)
   const free = cargoFree(game)
@@ -54,7 +54,9 @@ export default function MarketPanel({ game, planet, buy, sell, waitDay }: Market
     return COMMODITIES.map((commodity) => {
       const listing = game.markets[planet.id]?.[commodity.id]
       const owned = game.cargo[commodity.id]
-      const qty = quantities[commodity.id] ?? 1
+      const inputStr = inputs[commodity.id] ?? '1'
+      const parsedQty = Number(inputStr)
+      const qty = Number.isFinite(parsedQty) && parsedQty > 0 ? Math.floor(parsedQty) : 0
 
       const maxByCredits = listing ? Math.floor(game.credits / Math.max(1, listing.price)) : 0
       const maxBuy = Math.max(0, Math.min(listing?.stock ?? 0, free, maxByCredits))
@@ -79,6 +81,7 @@ export default function MarketPanel({ game, planet, buy, sell, waitDay }: Market
         listing,
         owned,
         qty,
+        inputStr,
         maxBuy,
         buyCost,
         canBuy,
@@ -89,20 +92,22 @@ export default function MarketPanel({ game, planet, buy, sell, waitDay }: Market
         dir,
       }
     })
-  }, [game, planet, quantities, free])
+  }, [game, planet, inputs, free])
 
-  const setQty = (id: string, qty: number) => {
-    setQuantities((prev) => ({ ...prev, [id]: Math.max(1, Math.min(9999, Math.floor(qty))) }))
+  const setQty = (id: string, raw: string) => {
+    setInputs((prev) => ({ ...prev, [id]: raw }))
   }
 
   const handleBuy = (id: CommodityId, qty: number) => {
+    if (qty <= 0) return
     const res = buy(id, qty)
-    if (res.ok) setQty(id, 1)
+    if (res.ok) setQty(id, '1')
   }
 
   const handleSell = (id: CommodityId, qty: number) => {
+    if (qty <= 0) return
     const res = sell(id, qty)
-    if (res.ok) setQty(id, 1)
+    if (res.ok) setQty(id, '1')
   }
 
   return (
@@ -173,7 +178,7 @@ export default function MarketPanel({ game, planet, buy, sell, waitDay }: Market
             </thead>
             <tbody>
               {rows.map(
-                ({ commodity, listing, owned, qty, buyCost, canBuy, canSell, sellValue, buyTooltip, band, dir }) => (
+                ({ commodity, listing, owned, qty, inputStr, buyCost, canBuy, canSell, sellValue, buyTooltip, band, dir }) => (
                   <tr key={commodity.id} className="border-b border-slate-800/60 hover:bg-slate-800/30">
                     <td className="py-3 pr-4">
                       <div className="flex items-center gap-2">
@@ -212,8 +217,8 @@ export default function MarketPanel({ game, planet, buy, sell, waitDay }: Market
                       <input
                         type="number"
                         min={1}
-                        value={qty}
-                        onChange={(e) => setQty(commodity.id, Number(e.target.value))}
+                        value={inputStr}
+                        onChange={(e) => setQty(commodity.id, e.target.value)}
                         className="input-sm text-right"
                       />
                     </td>

@@ -2,10 +2,12 @@ const SOUND_KEY = 'sorstar.sound'
 
 let ctx: AudioContext | null = null
 let enabled = true
-try {
-  enabled = window.localStorage.getItem(SOUND_KEY) !== 'off'
-} catch {
-  enabled = true
+if (typeof window !== 'undefined') {
+  try {
+    enabled = window.localStorage.getItem(SOUND_KEY) !== 'off'
+  } catch {
+    enabled = true
+  }
 }
 
 export function soundEnabled(): boolean {

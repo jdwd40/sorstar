@@ -59,4 +59,4 @@ Schema changes are committed as JS migrations in `pb/pb_migrations` and are appl
 | `npm run pb:install` | Download the PocketBase server binary |
 | `npm run pb:setup` | Create superuser + apply migrations |
 | `npm run pb:serve` | Run the PocketBase server |
-| `npx tsx scripts/verify-game.ts` | Run the headless game-logic sanity checks |
+| `npm run verify` | Run the headless game-logic sanity checks |

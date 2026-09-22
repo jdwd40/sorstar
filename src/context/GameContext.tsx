@@ -15,7 +15,6 @@ export interface ActionResult {
 
 interface GameContextValue {
   game: GameState | null
-  saveExists: boolean
   ready: boolean
   authUser: AuthUser | null
   authAvailable: boolean
@@ -24,7 +23,6 @@ interface GameContextValue {
   register: (email: string, password: string, name?: string) => Promise<string | null>
   logout: () => Promise<void>
   startNewGame: () => void
-  continueGame: () => void
   resetGame: () => void
   dismissVictory: () => void
   buy: (commodityId: CommodityId, qty: number) => ActionResult
@@ -49,9 +47,13 @@ function stampProgress(next: GameState): GameState {
   return { ...next, stats }
 }
 
+function logProfit(profit: number): string {
+  const p = Math.round(profit)
+  return p >= 0 ? ` (+${p} cr profit)` : ` (${p} cr)`
+}
+
 export function GameProvider({ children }: { children: ReactNode }) {
   const [game, setGame] = useState<GameState | null>(null)
-  const [saveExists, setSaveExists] = useState(false)
   const [ready, setReady] = useState(false)
   const [authBusy, setAuthBusy] = useState(false)
   const storeRef = useRef<GameStore>(createGameStore())
@@ -67,7 +69,6 @@ export function GameProvider({ children }: { children: ReactNode }) {
         if (loaded) {
           gameRef.current = stampProgress(loaded)
           setGame(stampProgress(loaded))
-          setSaveExists(true)
         }
       } finally {
         if (active) setReady(true)
@@ -89,21 +90,13 @@ export function GameProvider({ children }: { children: ReactNode }) {
     const next = createNewGame()
     gameRef.current = next
     setGame(next)
-    setSaveExists(true)
     void storeRef.current.save(next).catch((err) => console.error('Failed to save game:', err))
-  }, [])
-
-  const continueGame = useCallback(() => {
-    if (gameRef.current) {
-      setGame(gameRef.current)
-    }
   }, [])
 
   const resetGame = useCallback(() => {
     void storeRef.current.clear().catch((err) => console.error('Failed to clear save:', err))
     gameRef.current = null
     setGame(null)
-    setSaveExists(false)
   }, [])
 
   const reloadFromStore = useCallback(async () => {
@@ -112,11 +105,9 @@ export function GameProvider({ children }: { children: ReactNode }) {
       const stamped = stampProgress(loaded)
       gameRef.current = stamped
       setGame(stamped)
-      setSaveExists(true)
-    } else {
+      } else {
       gameRef.current = null
       setGame(null)
-      setSaveExists(false)
     }
   }, [])
 
@@ -198,17 +189,16 @@ export function GameProvider({ children }: { children: ReactNode }) {
       if (!gameRef.current) return { ok: false, message: 'No active game.' }
       const result = sellCommodity(gameRef.current, commodityId, qty)
       if (result.error) return { ok: false, message: result.error }
-      const stateBefore = gameRef.current
       const commodity = COMMODITY_MAP[commodityId]
-      const basis = stateBefore.costBasis[commodityId] ?? 0
-      const price = stateBefore.markets[stateBefore.planetId][commodityId].price
-      const profit = (price - basis) * qty
+      const priceNow = result.state.markets[result.state.planetId][commodityId].price
+      const basis = result.state.costBasis[commodityId] ?? priceNow
+      const profit = (priceNow - basis) * qty
       const planet = PLANET_MAP[result.state.planetId]
       commit(
         withLog(
           result.state,
           '💰',
-          `Sold ${qty}× ${commodity.name} for ${qty * price} cr${planet ? ` at ${planet.name}` : ''}${profit >= 0 ? ` (+${profit} cr profit)` : ` (${profit} cr)`}.`,
+          `Sold ${qty}× ${commodity.name} for ${qty * priceNow} cr${planet ? ` at ${planet.name}` : ''}${logProfit(profit)}.`,
         ),
       )
       return { ok: true, message: 'Sale complete.' }
@@ -261,7 +251,6 @@ export function GameProvider({ children }: { children: ReactNode }) {
   const value = useMemo<GameContextValue>(
     () => ({
       game,
-      saveExists,
       ready,
       authUser,
       authAvailable: storeRef.current.auth !== null,
@@ -270,7 +259,6 @@ export function GameProvider({ children }: { children: ReactNode }) {
       register,
       logout,
       startNewGame,
-      continueGame,
       resetGame,
       dismissVictory,
       buy,
@@ -281,7 +269,6 @@ export function GameProvider({ children }: { children: ReactNode }) {
     }),
     [
       game,
-      saveExists,
       ready,
       authUser,
       authBusy,
@@ -289,7 +276,6 @@ export function GameProvider({ children }: { children: ReactNode }) {
       register,
       logout,
       startNewGame,
-      continueGame,
       resetGame,
       dismissVictory,
       buy,
