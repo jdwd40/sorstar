@@ -127,6 +127,9 @@ export class LocalStorageGameStore implements GameStore {
   async save(state: GameState): Promise<void> {
     try {
       window.localStorage.setItem(this.key, JSON.stringify(state))
+      // The legacy key has served its migration purpose; drop it so a later
+      // clear()/reset cannot resurrect the old copy through the fallback.
+      window.localStorage.removeItem(LEGACY_SAVE_KEY)
     } catch {
       // Storage may be unavailable (e.g. private mode) - fail silently.
     }
@@ -135,6 +138,7 @@ export class LocalStorageGameStore implements GameStore {
   async clear(): Promise<void> {
     try {
       window.localStorage.removeItem(this.key)
+      window.localStorage.removeItem(LEGACY_SAVE_KEY)
     } catch {
       // noop
     }

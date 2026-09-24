@@ -266,8 +266,13 @@ export function GameProvider({ children }: { children: ReactNode }) {
       const result = sellCommodity(gameRef.current, commodityId, qty)
       if (result.error) return { ok: false, message: result.error }
       const commodity = COMMODITY_MAP[commodityId]
+      const stateBefore = gameRef.current
       const priceNow = result.state.markets[result.state.planetId][commodityId].price
-      const basis = result.state.costBasis[commodityId] ?? priceNow
+      // same basis the store used to record the profit: pre-sale cost basis (the
+      // post-sale state may already have dropped it when the position was sold out)
+      const basis =
+        stateBefore.costBasis[commodityId] ??
+        stateBefore.markets[stateBefore.planetId][commodityId].price
       const profit = (priceNow - basis) * qty
       const planet = PLANET_MAP[result.state.planetId]
       commit(
