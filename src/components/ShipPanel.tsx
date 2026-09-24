@@ -222,11 +222,7 @@ export default function ShipPanel({ game, travelUpgrade, resetGame }: ShipPanelP
 
       <div className="text-center">
         <button
-          onClick={() => {
-            if (window.confirm('Erase your save and return to the title screen?')) {
-              resetGame()
-            }
-          }}
+          onClick={() => resetGame()}
           className="text-red-400/80 hover:text-red-300 text-sm underline underline-offset-2"
         >
           Reset Game

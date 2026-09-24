@@ -7,9 +7,8 @@ import TravelPanel from '../components/TravelPanel'
 import ShipPanel from '../components/ShipPanel'
 import LogPanel from '../components/LogPanel'
 import VictoryModal from '../components/VictoryModal'
-import { PLANET_MAP } from '../data/gameData'
+import { GAME_TARGET_NET_WORTH, PLANET_MAP, cargoCapacityAtLevel } from '../data/gameData'
 import { cargoUsed } from '../services/marketService'
-import { cargoCapacityAtLevel, GAME_TARGET_NET_WORTH } from '../data/gameData'
 import { cargoValueAtPlanet, goalProgress, netWorth } from '../services/gameService'
 import { fmt, fmtMoney, fmtPct } from '../utils/format'
 import { sound } from '../utils/sound'
@@ -87,15 +86,11 @@ export default function GamePage() {
     flashTimer.current = setTimeout(() => setFlash(null), 3500)
   }
 
-  const runAction = (
-    fn: () => ActionResult,
-    okMessage: string,
-    okSound?: SoundKind,
-  ): ActionResult => {
+  const runAction = (fn: () => ActionResult, okSound?: SoundKind): ActionResult => {
     const res = fn()
     if (res.ok) {
       if (okSound) sound[okSound]()
-      flashMessage(okMessage, 'ok')
+      flashMessage(res.message, 'ok')
     } else {
       sound.error()
       flashMessage(res.message, 'error')
@@ -104,6 +99,9 @@ export default function GamePage() {
   }
 
   const handleNewGame = () => {
+    // Always confirm from the game screen too - a stray click on "Start new
+    // game" at the victory screen must not silently erase the account save.
+    if (!window.confirm('Erase this save and return to the title screen?')) return
     resetGame()
     navigate('/', { replace: true })
   }
@@ -211,23 +209,21 @@ export default function GamePage() {
           <MarketPanel
             game={game}
             planet={planet}
-            buy={(id, qty) => runAction(() => buy(id, qty), 'Purchase complete.', 'buy')}
-            sell={(id, qty) => runAction(() => sell(id, qty), 'Sale complete.', 'sell')}
-            waitDay={() => runAction(() => waitDay(), 'A new day begins.', 'wait').ok}
+            buy={(id, qty) => runAction(() => buy(id, qty), 'buy')}
+            sell={(id, qty) => runAction(() => sell(id, qty), 'sell')}
+            waitDay={() => runAction(() => waitDay(), 'wait')}
           />
         )}
         {tab === 'travel' && (
           <TravelPanel
             game={game}
-            travel={(id) => runAction(() => travel(id), 'Travel complete.')}
+            travel={(id) => runAction(() => travel(id))}
           />
         )}
         {tab === 'ship' && (
           <ShipPanel
             game={game}
-            travelUpgrade={(type) =>
-              runAction(() => travelUpgrade(type), 'Upgrade installed.', 'upgrade')
-            }
+            travelUpgrade={(type) => runAction(() => travelUpgrade(type), 'upgrade')}
             resetGame={handleNewGame}
           />
         )}

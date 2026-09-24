@@ -16,6 +16,11 @@ export interface ActionResult {
 interface GameContextValue {
   game: GameState | null
   ready: boolean
+  loadError: boolean
+  persistError: boolean
+  pilotLost: boolean
+  dismissPilotLost: () => void
+  retryLoad: () => void
   authUser: AuthUser | null
   authAvailable: boolean
   authBusy: boolean
@@ -55,100 +60,171 @@ function logProfit(profit: number): string {
 export function GameProvider({ children }: { children: ReactNode }) {
   const [game, setGame] = useState<GameState | null>(null)
   const [ready, setReady] = useState(false)
+  const [loadNonce, setLoadNonce] = useState(0)
+  const [loadError, setLoadError] = useState(false)
+  const [persistError, setPersistError] = useState(false)
   const [authBusy, setAuthBusy] = useState(false)
-  const storeRef = useRef<GameStore>(createGameStore())
+  const [pilotLost, setPilotLost] = useState(false)
+  const [externalChange, setExternalChange] = useState(0)
+  const storeRef = useRef<GameStore | null>(null)
+  if (storeRef.current === null) storeRef.current = createGameStore()
+  const store = storeRef.current
   const gameRef = useRef<GameState | null>(null)
-  const [authUser, setAuthUser] = useState<AuthUser | null>(storeRef.current.auth?.user ?? null)
+  const [authUser, setAuthUser] = useState<AuthUser | null>(store.auth?.user ?? null)
+  // Monotonic token so a slower/older load() can never overwrite the result of
+  // a newer one (e.g. the mount-time load resolving after a login reloads).
+  const loadTokenRef = useRef(0)
+
+  useEffect(() => {
+    store.onPilotLost = () => setPilotLost(true)
+    store.onExternalChange = () => setExternalChange((n) => n + 1)
+    return () => {
+      store.onPilotLost = undefined
+      store.onExternalChange = undefined
+    }
+  }, [store])
 
   useEffect(() => {
     let active = true
+    const token = ++loadTokenRef.current
     ;(async () => {
       try {
-        const loaded = await storeRef.current.load()
-        if (!active) return
+        const loaded = await store.load()
+        if (!active || token !== loadTokenRef.current) return
         if (loaded) {
-          gameRef.current = stampProgress(loaded)
-          setGame(stampProgress(loaded))
+          const stamped = stampProgress(loaded)
+          gameRef.current = stamped
+          setGame(stamped)
+        } else {
+          gameRef.current = null
+          setGame(null)
         }
+        setLoadError(false)
+      } catch (err) {
+        if (!active || token !== loadTokenRef.current) return
+        console.error('Failed to load game:', err)
+        setLoadError(true)
       } finally {
-        if (active) setReady(true)
+        if (active && token === loadTokenRef.current) setReady(true)
       }
     })()
     return () => {
       active = false
     }
+  }, [loadNonce, store])
+
+  const trackSave = useCallback((operation: Promise<void>, message: string) => {
+    void operation
+      .then(() => setPersistError(false))
+      .catch((err: unknown) => {
+        console.error(message, err)
+        setPersistError(true)
+      })
+  }, [])
+
+  const retryLoad = useCallback(() => {
+    setLoadNonce((n) => n + 1)
   }, [])
 
   const commit = useCallback((next: GameState) => {
     const stamped = stampProgress(next)
     gameRef.current = stamped
     setGame(stamped)
-    void storeRef.current.save(stamped).catch((err) => console.error('Failed to save game:', err))
-  }, [])
+    trackSave(store.save(stamped), 'Failed to save game:')
+  }, [trackSave, store])
 
   const startNewGame = useCallback(() => {
     const next = createNewGame()
     gameRef.current = next
     setGame(next)
-    void storeRef.current.save(next).catch((err) => console.error('Failed to save game:', err))
-  }, [])
+    trackSave(store.save(next), 'Failed to save game:')
+  }, [trackSave, store])
 
   const resetGame = useCallback(() => {
-    void storeRef.current.clear().catch((err) => console.error('Failed to clear save:', err))
+    trackSave(store.clear(), 'Failed to clear save:')
     gameRef.current = null
     setGame(null)
-  }, [])
+  }, [trackSave, store])
 
   const reloadFromStore = useCallback(async () => {
-    const loaded = await storeRef.current.load()
-    if (loaded) {
-      const stamped = stampProgress(loaded)
-      gameRef.current = stamped
-      setGame(stamped)
+    const token = ++loadTokenRef.current
+    try {
+      const loaded = await store.load()
+      if (token !== loadTokenRef.current) return
+      if (loaded) {
+        const stamped = stampProgress(loaded)
+        gameRef.current = stamped
+        setGame(stamped)
       } else {
-      gameRef.current = null
-      setGame(null)
+        gameRef.current = null
+        setGame(null)
+      }
+      setLoadError(false)
+    } catch (err) {
+      if (token !== loadTokenRef.current) return
+      console.error('Failed to reload game:', err)
+      setLoadError(true)
+      // Keep the in-memory game: we don't know what the server holds, and
+      // clearing it here would throw away the player's current session.
+    } finally {
+      if (token === loadTokenRef.current) setReady(true)
     }
-  }, [])
+  }, [store])
+
+  // Another tab / device wrote the same save: reload so we track it instead of
+  // silently last-write-wins over that progress.
+  useEffect(() => {
+    if (externalChange === 0) return
+    void reloadFromStore()
+  }, [externalChange, reloadFromStore])
 
   const login = useCallback(
     async (email: string, password: string): Promise<string | null> => {
-      if (!storeRef.current.auth) return 'Accounts are only available with a PocketBase backend.'
+      if (!store.auth) return 'Accounts are only available with a PocketBase backend.'
       setAuthBusy(true)
       try {
-        const err = await storeRef.current.auth.login(email, password)
+        const err = await store.auth.login(email, password)
         if (err) return err
-        setAuthUser(storeRef.current.auth.user)
+        setAuthUser(store.auth.user)
         await reloadFromStore()
         return null
       } finally {
         setAuthBusy(false)
       }
     },
-    [reloadFromStore],
+    [reloadFromStore, store.auth],
   )
 
   const register = useCallback(
     async (email: string, password: string, name?: string): Promise<string | null> => {
-      if (!storeRef.current.auth) return 'Accounts are only available with a PocketBase backend.'
+      if (!store.auth) return 'Accounts are only available with a PocketBase backend.'
       setAuthBusy(true)
       try {
-        const err = await storeRef.current.auth.register(email, password, name)
+        const err = await store.auth.register(email, password, name)
         if (err) return err
-        setAuthUser(storeRef.current.auth.user)
+        setAuthUser(store.auth.user)
+        if (gameRef.current) {
+          // Push the current save onto the new account so registration never
+          // leaves the account without the browser's game (adoption inside the
+          // store is only a fallback for the case where nothing is loaded yet).
+          trackSave(store.save(gameRef.current), 'Failed to save game:')
+        } else {
+          // No in-memory game: pull whatever the account holds (maybe nothing).
+          await reloadFromStore()
+        }
         return null
       } finally {
         setAuthBusy(false)
       }
     },
-    [],
+    [trackSave, store, reloadFromStore],
   )
 
   const logout = useCallback(async () => {
-    if (!storeRef.current.auth) return
+    if (!store.auth) return
     setAuthBusy(true)
     try {
-      await storeRef.current.auth.logout()
+      await store.auth.logout()
       setAuthUser(null)
       // Switching identities means the in-memory game belongs to the previous
       // account, so reload from the (fresh) anonymous identity.
@@ -156,7 +232,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
     } finally {
       setAuthBusy(false)
     }
-  }, [reloadFromStore])
+  }, [reloadFromStore, store.auth])
 
   const dismissVictory = useCallback(() => {
     if (!gameRef.current) return
@@ -248,12 +324,19 @@ export function GameProvider({ children }: { children: ReactNode }) {
     [commit],
   )
 
+  const dismissPilotLost = useCallback(() => setPilotLost(false), [])
+
   const value = useMemo<GameContextValue>(
     () => ({
       game,
       ready,
+      loadError,
+      persistError,
+      pilotLost,
+      dismissPilotLost,
+      retryLoad,
       authUser,
-      authAvailable: storeRef.current.auth !== null,
+      authAvailable: store.auth !== null,
       authBusy,
       login,
       register,
@@ -270,7 +353,13 @@ export function GameProvider({ children }: { children: ReactNode }) {
     [
       game,
       ready,
+      loadError,
+      persistError,
+      pilotLost,
+      dismissPilotLost,
+      retryLoad,
       authUser,
+      store.auth,
       authBusy,
       login,
       register,

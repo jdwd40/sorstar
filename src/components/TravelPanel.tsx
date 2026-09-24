@@ -105,12 +105,12 @@ export default function TravelPanel({ game, travel }: TravelPanelProps) {
   const [arrival, setArrival] = useState<TravelResult | null>(null)
   const [mapError, setMapError] = useState<string | null>(null)
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const jumpTimersRef = useRef<ReturnType<typeof setTimeout>[]>([])
+const warpTimersRef = useRef<ReturnType<typeof setTimeout>[]>([])
 
   useEffect(() => {
-    const timers = jumpTimersRef.current
     return () => {
-      timers.forEach((t) => clearTimeout(t))
+      if (timerRef.current) clearTimeout(timerRef.current)
+      warpTimersRef.current.forEach(clearTimeout)
     }
   }, [])
 
@@ -154,10 +154,10 @@ export default function TravelPanel({ game, travel }: TravelPanelProps) {
     setJumpTo(dest)
     setPhase('charging')
     sound.travel()
-    jumpTimersRef.current.push(window.setTimeout(() => setPhase('jumping'), 450))
-    jumpTimersRef.current.push(
+warpTimersRef.current.forEach(clearTimeout)
+    warpTimersRef.current = [
+      window.setTimeout(() => setPhase('jumping'), 450),
       window.setTimeout(() => {
-        jumpTimersRef.current = []
         const res = travel(dest.id)
         if (!res.ok) {
           setPhase('idle')
@@ -169,7 +169,7 @@ export default function TravelPanel({ game, travel }: TravelPanelProps) {
         setJumpTo(null)
         setArrival(res.info ?? null)
       }, 1300),
-    )
+    ]
   }
 
   const mapX = (x: number) => `${x}%`
@@ -346,7 +346,7 @@ export default function TravelPanel({ game, travel }: TravelPanelProps) {
                     </td>
                     <td className="py-2 text-right">
                       <span className="text-emerald-400 font-semibold">+{fmtMoney(lead.runProfit)}</span>
-                      <div className="text-[10px] text-slate-500">after fuel · load {lead.runQty} units</div>
+                      <div className="text-[10px] text-slate-500">after fuel & sell impact · load {lead.runQty} units</div>
                     </td>
                   </tr>
                 ))}

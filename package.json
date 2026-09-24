@@ -8,6 +8,7 @@
     "build": "sh pb/setup.sh && tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
+    "verify": "tsx scripts/verify-game.ts",
     "pb:install": "sh pb/install.sh",
     "pb:setup": "sh pb/setup.sh",
     "pb:serve": "sh pb/start.sh",
@@ -15,15 +16,11 @@
   },
   "dependencies": {
     "autoprefixer": "^10.4.20",
-    "class-variance-authority": "^0.7.1",
-    "clsx": "^2.1.1",
-    "lucide-react": "^0.468.0",
     "pocketbase": "^0.28.1",
     "postcss": "^8.4.49",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-router-dom": "^7.0.2",
-    "tailwind-merge": "^2.5.5",
     "tailwindcss": "^3.4.17"
   },
   "devDependencies": {
@@ -35,7 +32,7 @@
     "eslint-plugin-react-hooks": "^5.0.0",
     "eslint-plugin-react-refresh": "^0.4.16",
     "globals": "^15.13.0",
-    "tsx": "^4.23.15",
+"tsx": "^4.23.15",
     "typescript": "~5.6.2",
     "typescript-eslint": "^8.18.1",
     "vite": "^6.0.3"

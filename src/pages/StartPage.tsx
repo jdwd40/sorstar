@@ -7,13 +7,13 @@ import { netWorth } from '../services/gameService'
 import { fmt, fmtMoney } from '../utils/format'
 
 export default function StartPage() {
-  const { game, startNewGame, resetGame } = useGame()
+const { game, ready, loadError, retryLoad, startNewGame, resetGame } = useGame()
   const navigate = useNavigate()
   const [confirmReset, setConfirmReset] = useState(false)
   const hasSave = game !== null
 
   const handleNewGame = () => {
-    if (hasSave) {
+    if (hasSave || loadError) {
       if (!window.confirm('Start a new game? Your current save will be overwritten.')) return
     }
     startNewGame()
@@ -45,14 +45,28 @@ export default function StartPage() {
           nine planets — and grow your little freighter into a merchant legend.
         </p>
 
+        {loadError && (
+          <div className="card p-4 w-full max-w-2xl mb-6 text-left border-amber-700/60 bg-amber-950/50" role="alert">
+            <div className="flex items-center justify-between gap-4">
+              <div className="text-sm text-amber-200">
+                <b>Could not load your save.</b> The save server may be unreachable —
+                starting a new game now could overwrite it.
+              </div>
+              <button onClick={retryLoad} className="btn-ghost text-xs whitespace-nowrap">
+                Retry
+              </button>
+            </div>
+          </div>
+        )}
+
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 w-full max-w-2xl">
-          <button onClick={handleNewGame} className="btn-primary text-lg py-4">
+<button onClick={handleNewGame} disabled={!ready} className="btn-primary text-lg py-4">
             {hasSave ? 'New Game' : 'Start Trading'}
           </button>
           <button
             onClick={handleContinue}
             className="btn-ghost text-lg py-4"
-            disabled={!game}
+            disabled={!ready || !game}
           >
             Continue Game
           </button>

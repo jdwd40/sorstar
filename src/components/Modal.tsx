@@ -16,6 +16,9 @@ export default function Modal({ onClose, children, labelledBy, className }: Moda
   useEffect(() => {
     const previouslyFocused = document.activeElement as HTMLElement | null
     dialogRef.current?.focus()
+    // Lock background scroll while the modal is open; restore on close.
+    const prevOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
 
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
@@ -48,6 +51,7 @@ export default function Modal({ onClose, children, labelledBy, className }: Moda
     window.addEventListener('keydown', onKey)
     return () => {
       window.removeEventListener('keydown', onKey)
+      document.body.style.overflow = prevOverflow
       previouslyFocused?.focus()
     }
   }, [onClose])
@@ -63,7 +67,7 @@ export default function Modal({ onClose, children, labelledBy, className }: Moda
       <div
         ref={dialogRef}
         tabIndex={-1}
-        className={`relative card p-6 w-full max-w-lg modal-pop max-h-[85vh] overflow-y-auto outline-none ${className ?? ''}`}
+className={`relative card p-6 w-full max-w-lg modal-pop max-h-[85vh] overflow-y-auto outline-none ${className ?? ''}`}
       >
         {children}
       </div>

@@ -226,19 +226,19 @@ export const PLANET_TYPE_META: Record<PlanetType, { icon: string; color: string 
   frontier: { icon: '🚀', color: 'text-orange-400' },
 }
 
-export interface CargoTier {
+interface CargoTier {
   level: number
   cost: number
   capacity: number
 }
 
-export interface EngineTier {
+interface EngineTier {
   level: number
   cost: number
   fuelPerLy: number
 }
 
-export interface NavTier {
+interface NavTier {
   level: number
   cost: number
 }

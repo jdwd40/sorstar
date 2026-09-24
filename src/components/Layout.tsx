@@ -11,6 +11,41 @@ interface LayoutProps {
   children: ReactNode
 }
 
+function SyncWarnings() {
+  const { persistError, pilotLost, dismissPilotLost } = useGame()
+  return (
+    <>
+      {persistError && (
+        <div
+          role="alert"
+          className="bg-amber-950/95 border-b border-amber-700/50 text-amber-200 text-xs text-center py-1.5 px-3"
+        >
+          Progress is not syncing with the save server — it may be unreachable.
+          Will retry on your next action.
+        </div>
+      )}
+      {pilotLost && (
+        <div
+          role="alert"
+          className="bg-rose-950/95 border-b border-rose-700/50 text-rose-200 text-xs text-center py-1.5 px-3 flex items-center justify-center gap-3"
+        >
+          <span>
+            Your previous pilot could not be restored — its saved game is out of
+            reach, so a fresh pilot was created.
+          </span>
+          <button
+            onClick={dismissPilotLost}
+            className="underline underline-offset-2 hover:text-white"
+            aria-label="Dismiss pilot warning"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+    </>
+  )
+}
+
 function SoundToggle() {
   const [on, setOn] = useState(soundEnabled())
   return (
@@ -77,7 +112,9 @@ export default function Layout({ children }: LayoutProps) {
   return (
     <div className="min-h-screen flex flex-col">
       <Starfield />
-      <header className="border-b border-slate-800/80 bg-slate-950/60 backdrop-blur-sm sticky top-0 z-40">
+      <div className="sticky top-0 z-40">
+        <SyncWarnings />
+        <header className="border-b border-slate-800/80 bg-slate-950/60 backdrop-blur-sm">
         <div className="max-w-6xl mx-auto px-4 h-14 flex items-center justify-between gap-2">
           <Link to={game ? '/game' : '/'} className="flex items-center gap-2">
             <span className="text-2xl">🚀</span>
@@ -107,6 +144,7 @@ export default function Layout({ children }: LayoutProps) {
           </div>
         </div>
       </header>
+      </div>
 
       <main className="flex-grow w-full max-w-6xl mx-auto px-4 py-6">{children}</main>
 

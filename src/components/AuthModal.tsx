@@ -32,14 +32,23 @@ export default function AuthModal({ onClose }: { onClose: () => void }) {
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault()
     setError(null)
-    const result = isRegister
-      ? await register(email, password, name)
-      : await login(email, password)
-    if (result) {
-      setError(result)
-      return
+    try {
+      const result = isRegister
+        ? await register(email, password, name)
+        : await login(email, password)
+      if (result) {
+        setError(result)
+        return
+      }
+      onClose()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Something went wrong. Please try again.')
     }
-    onClose()
+  }
+
+  const switchMode = (next: AuthMode) => {
+    setMode(next)
+    setError(null)
   }
 
   return (
@@ -104,14 +113,14 @@ export default function AuthModal({ onClose }: { onClose: () => void }) {
         {isRegister ? (
           <>
             Already have an account?{' '}
-            <button onClick={() => setMode('login')} className="text-indigo-300 hover:text-indigo-200">
+            <button onClick={() => switchMode('login')} className="text-indigo-300 hover:text-indigo-200">
               Sign in
             </button>
           </>
         ) : (
           <>
             New here?{' '}
-            <button onClick={() => setMode('register')} className="text-indigo-300 hover:text-indigo-200">
+            <button onClick={() => switchMode('register')} className="text-indigo-300 hover:text-indigo-200">
               Create an account
             </button>
           </>

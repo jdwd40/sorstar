@@ -8,7 +8,7 @@ import type {
 } from '../types/game'
 import { COMMODITY_MAP, PLANET_MAP, cargoCapacityAtLevel } from '../data/gameData'
 
-export function hashString(str: string): number {
+function hashString(str: string): number {
   let hash = 2166136261
   for (let i = 0; i < str.length; i++) {
     hash ^= str.charCodeAt(i)
@@ -17,7 +17,7 @@ export function hashString(str: string): number {
   return hash >>> 0
 }
 
-export function randomFactor(planetId: string, commodityId: string, day: number): number {
+function randomFactor(planetId: string, commodityId: string, day: number): number {
   const h = hashString(`${planetId}:${commodityId}:${day}`)
   return 0.96 + (h % 1000) / 1000 * 0.08
 }
@@ -40,7 +40,7 @@ export function stockFactor(stock: number, baseStock: number): number {
   return 1 + ((baseStock - s) / baseStock) * 0.6
 }
 
-export function marketPrice(
+function marketPrice(
   planet: Planet,
   commodity: Commodity,
   listing: MarketListing,
@@ -62,7 +62,7 @@ export function priceDirection(listing: MarketListing): 'up' | 'down' | 'flat' {
   return 'flat'
 }
 
-export function createPlanetMarket(planet: Planet, day: number): Record<CommodityId, MarketListing> {
+function createPlanetMarket(planet: Planet, day: number): Record<CommodityId, MarketListing> {
   const result = {} as Record<CommodityId, MarketListing>
   for (const commodity of Object.values(COMMODITY_MAP)) {
     const mod = Math.max(0.4, planet.priceMods[commodity.id])
@@ -178,11 +178,16 @@ export function sellCommodity(
     [state.planetId]: nextMarket,
   }
 
+  const remaining = owned - qty
+  const nextCostBasis = { ...state.costBasis }
+  if (remaining === 0) delete nextCostBasis[commodityId]
+
   return {
     state: {
       ...state,
       credits: state.credits + proceeds,
-      cargo: { ...state.cargo, [commodityId]: owned - qty },
+      cargo: { ...state.cargo, [commodityId]: remaining },
+      costBasis: nextCostBasis,
       markets: nextMarkets,
       stats: {
         ...state.stats,

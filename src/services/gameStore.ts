@@ -70,11 +70,32 @@ export interface GameStore {
   load(): Promise<GameState | null>
   save(state: GameState): Promise<void>
   clear(): Promise<void>
+  /**
+   * Fired when the anonymous pilot identity is unrecoverable and a fresh pilot
+   * has been minted in its place (the old pilot's save is now out of reach).
+   */
+  onPilotLost?: () => void
+  /**
+   * Fired when the underlying save changed outside this store instance (e.g.
+   * another tab wrote the same local save / account). Consumers can reload.
+   */
+  onExternalChange?: () => void
   readonly auth: AuthStore | null
 }
 
 export class LocalStorageGameStore implements GameStore {
-  constructor(private readonly key: string = SAVE_KEY) {}
+  onExternalChange?: () => void
+
+  constructor(private readonly key: string = SAVE_KEY) {
+    if (typeof window !== 'undefined') {
+      // Cross-tab sync: another tab writing or clearing the same save (or
+      // clearing all storage) should be picked up instead of silently losing
+      // the last-write-wins race.
+      window.addEventListener('storage', (e) => {
+        if (e.key === this.key || e.key === null) this.onExternalChange?.()
+      })
+    }
+  }
 
   readonly auth = null
 
