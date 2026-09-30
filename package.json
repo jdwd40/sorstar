@@ -7,11 +7,12 @@
     "dev": "vite",
     "build": "sh pb/setup.sh && tsc -b && vite build",
     "lint": "eslint .",
+    "typecheck": "tsc -b",
     "preview": "vite preview",
     "verify": "tsx scripts/verify-game.ts",
     "pb:install": "sh pb/install.sh",
     "pb:setup": "sh pb/setup.sh",
-"pb:serve": "sh pb/start.sh"
+    "pb:serve": "sh pb/start.sh"
   },
   "dependencies": {
     "pocketbase": "^0.28.1",
@@ -21,6 +22,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.17.0",
+    "@types/node": "^26.6.3",
     "@types/react": "^18.3.17",
     "@types/react-dom": "^18.3.5",
     "@vitejs/plugin-react": "^4.3.4",

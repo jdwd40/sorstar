@@ -316,7 +316,9 @@ export function fuelCostAtLevel(level: number): number {
  * Capped so a fully upgraded hull can never cost more than a round trip is
  * worth, which keeps a late-game idle loop from being ruinous by accident.
  */
-export function dailyUpkeep(ship: Ship): number {
+export function dailyUpkeep(
+  ship: Pick<Ship, 'cargoLevel' | 'engineLevel' | 'navLevel'>,
+): number {
   const raw = UPKEEP_BASE + ship.cargoLevel + ship.engineLevel + ship.navLevel * UPKEEP_NAV_MULTIPLIER
   return Math.min(UPKEEP_MAX, Math.max(UPKEEP_BASE, raw))
 }

@@ -200,7 +200,11 @@ type Pricer = (level: MarketListing) => number
 function buyFill(listing: MarketListing, qty: number, priceAt: Pricer): { cost: number; stock: number } {
   let stock = listing.stock
   let cost = 0
-  for (let k = 0; k < qty; k++) {
+  // Clamped here as well as in the quoting functions, because this loop is what
+  // makes a bad quantity dangerous: `k < Infinity` never fails, so a
+  // non-finite count would spin forever and lock the tab rather than throw.
+  const units = wholeUnits(qty)
+  for (let k = 0; k < units; k++) {
     cost += priceAt({ ...listing, stock })
     stock = Math.max(0, stock - 1)
   }
@@ -226,7 +230,10 @@ function buyFill(listing: MarketListing, qty: number, priceAt: Pricer): { cost: 
 function sellFill(listing: MarketListing, qty: number, priceAt: Pricer): { proceeds: number; stock: number } {
   let stock = listing.stock
   let proceeds = 0
-  for (let k = 0; k < qty; k++) {
+  // Clamped for the same reason as in `buyFill`: an unbounded count would spin
+  // here instead of failing.
+  const units = wholeUnits(qty)
+  for (let k = 0; k < units; k++) {
     stock = Math.min(listing.stockMax, stock + 1)
     proceeds += priceAt({ ...listing, stock })
   }
@@ -262,6 +269,19 @@ function forecastPricer(planet: Planet, commodity: Commodity, driftScale: number
  * caller must persist. They are different values and conflating them is how a
  * listing ends up mispriced after a trade.
  */
+/**
+ * Trade quantities are whole units, or nothing.
+ *
+ * `Math.max(0, Math.floor(qty))` is the obvious one-liner and it is wrong twice
+ * over. `Math.floor(NaN)` is `NaN` and `Math.max` propagates it, so `NaN` sailed
+ * through as `NaN` units; and `Math.floor(Infinity)` is `Infinity`, which turns
+ * a fill loop's `k < units` test into something that never terminates - a
+ * browser-tab hang rather than an error.
+ */
+function wholeUnits(qty: number): number {
+  return Number.isFinite(qty) ? Math.max(0, Math.floor(qty)) : 0
+}
+
 export function quoteBuy(
   planet: Planet,
   commodity: Commodity,
@@ -269,7 +289,7 @@ export function quoteBuy(
   qty: number,
   day: number,
 ): { unitPrice: number; cost: number; price: number; stock: number } {
-  const units = Math.max(0, Math.floor(qty))
+  const units = wholeUnits(qty)
   const { cost, stock } = buyFill(listing, units, livePricer(planet, commodity, day))
   return {
     unitPrice: units > 0 ? cost / units : marketPrice(planet, commodity, listing, day),
@@ -295,7 +315,7 @@ export function quoteSellForecast(
   qty: number,
   driftScale = 1,
 ): { unitPrice: number; proceeds: number } {
-  const units = Math.max(0, Math.floor(qty))
+  const units = wholeUnits(qty)
   const { proceeds } = sellFill(listing, units, forecastPricer(planet, commodity, driftScale))
   return { unitPrice: units > 0 ? proceeds / units : 0, proceeds }
 }
@@ -313,7 +333,7 @@ export function quoteSell(
   qty: number,
   day: number,
 ): { unitPrice: number; proceeds: number; price: number; stock: number } {
-  const units = Math.max(0, Math.floor(qty))
+  const units = wholeUnits(qty)
   const { proceeds, stock } = sellFill(listing, units, livePricer(planet, commodity, day))
   return {
     unitPrice: units > 0 ? proceeds / units : marketPrice(planet, commodity, listing, day),
@@ -331,7 +351,7 @@ export function buyCommodity(
   const listing = state.markets[state.planetId]?.[commodityId]
   const planet = PLANET_MAP[state.planetId]
   if (!planet || !listing) return { state, error: 'No market here.' }
-  if (qty <= 0) return { state, error: 'Enter a quantity first.' }
+  if (!Number.isInteger(qty) || qty <= 0) return { state, error: 'Enter a quantity first.' }
 
   const capacity = cargoCapacityAtLevel(state.ship.cargoLevel)
   const used = cargoUsed(state)
@@ -386,7 +406,7 @@ export function sellCommodity(
   const listing = state.markets[state.planetId]?.[commodityId]
   const planet = PLANET_MAP[state.planetId]
   if (!planet || !listing) return { state, error: 'No market here.' }
-  if (qty <= 0) return { state, error: 'Enter a quantity first.' }
+  if (!Number.isInteger(qty) || qty <= 0) return { state, error: 'Enter a quantity first.' }
 
   const owned = state.cargo[commodityId]
   if (owned < qty) return { state, error: `You only have ${owned} ${COMMODITY_MAP[commodityId].name}.` }

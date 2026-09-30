@@ -6,6 +6,62 @@ function assertNumber(v: unknown, label: string): asserts v is number {
 }
 
 /**
+ * A non-negative whole number, or `undefined` for anything else. Used for
+ * per-unit records (cargo counts, cost basis) where a missing or malformed
+ * entry can be dropped without losing the rest of the save, rather than
+ * thrown over the way a top-level field is.
+ */
+function wholeOrUndef(v: unknown): number | undefined {
+  if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) return undefined
+  return Math.floor(v)
+}
+
+/**
+ * A complete cargo record: sanitised, with every commodity zero-filled.
+ *
+ * An absent count means "none of that aboard", so zero is the truthful repair.
+ * Filling from the commodity list also drops stray keys a hand-edited save may
+ * have picked up.
+ */
+function cleanCargo(record: unknown): GameState['cargo'] {
+  const cleaned = cleanUnits(record)
+  const cargo = {} as GameState['cargo']
+  for (const id of Object.keys(COMMODITY_MAP) as CommodityId[]) {
+    cargo[id] = cleaned[id] ?? 0
+  }
+  return cargo
+}
+
+/** Strip non-finite entries from a per-unit record, keeping the rest. */
+function cleanUnits(record: unknown): Partial<Record<string, number>> {
+  const out: Record<string, number> = {}
+  if (record === null || typeof record !== 'object') return out
+  for (const [cid, v] of Object.entries(record)) {
+    const n = wholeOrUndef(v)
+    if (n !== undefined) out[cid] = n
+  }
+  return out
+}
+
+/**
+ * Coerce a stat to a finite number, falling back to `fallback` only when the
+ * field is genuinely absent.
+ *
+ * Stats are cumulative counters that the trade and upgrade services
+ * increment, so a `NaN` here does not just look wrong in the log panel: it
+ * poisons every later total *and* defeats the victory gate, because
+ * `NaN > 0` is false. A `NaN` is unrecoverable and gets reported; a missing
+ * field can only predate the stat and is safely zeroed.
+ */
+function statOr(raw: number, fallback: number, label: string): number {
+  if (raw === undefined || raw === null) return fallback
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) {
+    throw new Error(`Corrupt save: stats.${label} must be a number`)
+  }
+  return raw
+}
+
+/**
  * Structural validation that runs before any migration so a versioned-but-
  * malformed save surfaces as a load error instead of passing and crashing the
  * first time the player waits/travels (advanceDay indexes every market,
@@ -43,12 +99,9 @@ function assertModel(raw: GameState): void {
     }
   }
 
-  if (!raw.cargo || typeof raw.cargo !== 'object') {
-    throw new Error('Corrupt save: cargo missing')
-  }
-  for (const cid of commodityIds) {
-    assertNumber(raw.cargo[cid], `cargo ${cid}`)
-  }
+  // Individual cargo counts are deliberately not asserted: they are repaired
+  // by the sanitising pass below, because a damaged count for one commodity
+  // should not cost the player the rest of their game.
 
   if (!raw.stats || typeof raw.stats !== 'object') {
     throw new Error('Corrupt save: stats missing')
@@ -56,6 +109,18 @@ function assertModel(raw: GameState): void {
 
   if (!raw.ship || typeof raw.ship !== 'object') {
     throw new Error('Corrupt save: ship missing')
+  }
+  // Only the *shape* is enforced here. Values are repaired by the sanitising
+  // pass in `migrate`, since a damaged cargo count or cost basis entry is
+  // recoverable and should not cost the player the rest of their game.
+  if (raw.cargo !== undefined && (raw.cargo === null || typeof raw.cargo !== 'object')) {
+    throw new Error('Corrupt save: cargo must be an object')
+  }
+  if (raw.costBasis !== undefined && (raw.costBasis === null || typeof raw.costBasis !== 'object')) {
+    throw new Error('Corrupt save: costBasis must be an object')
+  }
+  if (!raw.stats || typeof raw.stats !== 'object') {
+    throw new Error('Corrupt save: stats missing')
   }
   assertNumber(raw.ship.cargoLevel, 'ship.cargoLevel')
   assertNumber(raw.ship.engineLevel, 'ship.engineLevel')
@@ -92,6 +157,33 @@ export function migrate(raw: GameState): GameState {
 
   if (state.version < GAME_VERSION) {
     state = { ...state, version: GAME_VERSION }
+  }
+
+  // Self-healing pass. Runs on every load, not just version upgrades, because
+  // the realistic way to reach one of these is a save edited by hand or
+  // written by a future bug, not an old build.
+  const stats = state.stats
+  state = {
+    ...state,
+    // Credits and day are deliberately absent: `assertModel` rejects a
+    // non-finite value for both before this point. Defaulting them would be
+    // worse than the error it replaces - a player handed 0 credits has lost
+    // their game with no way to tell why.
+    //
+    // Cargo and cost basis are per-unit records, so a bad entry is dropped and
+    // the commodity reverts to the same fallback every read site already
+    // handles: base price for net worth, the market price for a sale.
+    cargo: cleanCargo(state.cargo),
+    costBasis: cleanUnits(state.costBasis),
+    stats: {
+      ...stats,
+      totalProfit: statOr(stats.totalProfit, 0, 'totalProfit'),
+      goodsBought: statOr(stats.goodsBought, 0, 'goodsBought'),
+      goodsSold: statOr(stats.goodsSold, 0, 'goodsSold'),
+      tripsMade: statOr(stats.tripsMade, 0, 'tripsMade'),
+      upgradesInvested: statOr(stats.upgradesInvested, 0, 'upgradesInvested'),
+      maxNetWorth: statOr(stats.maxNetWorth, 0, 'maxNetWorth'),
+    },
   }
   return state
 }

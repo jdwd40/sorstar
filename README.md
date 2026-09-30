@@ -25,6 +25,8 @@ The loop: **Buy** a commodity at a planet where it's cheap → **Travel** to a p
 
 Saves are stored permanently on a PocketBase server instead of the browser's localStorage, so they survive cache clears and can live on a shared/hosted instance. Each browser gets its own anonymous PocketBase account on first use, so every device keeps its own save. The pilot's generated credentials are kept in localStorage (never a real account password) so an expired session resumes the same pilot — and its save — instead of silently starting over. Use **Log in / Sign up** in the header (also available while playing) to bind that save to an email — a new account adopts the browser's current game, and signing in on another device pulls up your account's save.
 
+Saves are also repaired on load. Cargo counts and cost-basis entries that are missing or non-finite are dropped, and the rest of the save is kept — a bad entry for one commodity costs you that commodity, not the game. Cumulative stats that are absent default to zero. Damage that cannot be repaired by a sane fallback (an unknown planet, a missing ship, a non-numeric cumulative total) is reported as a load error instead of being guessed at, because silently defaulting your credits to zero would destroy a run with no explanation. Credits and day always take this stricter path. Trade quantities are validated the same way: only whole positive units are accepted.
+
 A registered account is **never** resumed from the stored pilot credentials. Those credentials belong to a different, older identity whose save record outlives registration, so authenticating with them would quietly load a stale game while reporting success. If an account's session cannot be restored, a temporary pilot is used and a banner prompts you to sign in again — your account's save is untouched and comes back on the next sign-in.
 
 Setup:
@@ -62,4 +64,5 @@ Schema changes are committed as JS migrations in `pb/pb_migrations` and are appl
 | `npm run pb:install` | Download the PocketBase server binary |
 | `npm run pb:setup` | Create superuser + apply migrations |
 | `npm run pb:serve` | Run the PocketBase server |
+| `npm run typecheck` | TypeScript across app, build config, and the verification script |
 | `npm run verify` | Run the headless game-logic sanity checks (`scripts/verify-game.ts`) |

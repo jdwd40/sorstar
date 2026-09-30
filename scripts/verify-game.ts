@@ -3,22 +3,30 @@
  * Run with: npx tsx scripts/verify-game.ts
  */
 import { createNewGame, netWorth } from '../src/services/gameService'
-import { advanceDay, buyCommodity, sellCommodity } from '../src/services/marketService'
+import { advanceDay, buyCommodity, quoteBuy, quoteSell, sellCommodity } from '../src/services/marketService'
 import { getTradeLeads } from '../src/services/intelService'
 import { travel } from '../src/services/travelService'
 import { resumableIdentity } from '../src/services/pocketBaseStore'
+import { migrate } from '../src/services/migrate'
 import { buyUpgrade } from '../src/services/playerService'
-import type { CommodityId, GameState } from '../src/types/game'
-import { COMMODITY_MAP, PLANETS, STARTING_SHIP, UPKEEP_BASE, UPKEEP_MAX, dailyUpkeep } from '../src/data/gameData'
+import type { Cargo, CommodityId, GameState } from '../src/types/game'
+import { COMMODITY_MAP, PLANETS, PLANET_MAP, STARTING_SHIP, UPKEEP_BASE, UPKEEP_MAX, dailyUpkeep } from '../src/data/gameData'
 
 let failures = 0
+/** Every commodity at zero, for handing a test a clean hold. */
+const emptyCargo = (): Cargo => {
+  const cargo = {} as Cargo
+  for (const id of Object.keys(COMMODITY_MAP) as CommodityId[]) cargo[id] = 0
+  return cargo
+}
+
 const check = (cond: boolean, label: string) => {
   console.log(`${cond ? 'PASS' : 'FAIL'} - ${label}`)
   if (!cond) failures++
 }
 
 // 1. every planet has a priced market
-const commoditiesToTest = ['food', 'metals', 'electronics', 'medicine', 'luxury', 'crystals']
+const commoditiesToTest: CommodityId[] = ['food', 'metals', 'electronics', 'medicine', 'luxury', 'crystals']
 for (const planet of PLANETS) {
   const state = createNewGame()
   state.planetId = planet.id
@@ -109,7 +117,7 @@ check(nw1 > nw0, 'net worth grows after profitable round trip')
 //    price. Buyers used to pay the pre-drain price while sellers paid
 //    post-restock, which handed buyers a free ride past their own market impact.
 let s6 = createNewGame()
-s6 = { ...s6, credits: 500000, cargo: Object.fromEntries(Object.keys(s6.cargo).map((k) => [k, 0])), costBasis: {} }
+s6 = { ...s6, credits: 500000, cargo: emptyCargo(), costBasis: {} }
 const listedPrice = s6.markets[s6.planetId].crystals.price
 const stockBeforeBuy = s6.markets[s6.planetId].crystals.stock
 const oneUnit = buyCommodity(s6, 'crystals', 1)
@@ -155,7 +163,7 @@ const rich = () => {
     ...st,
     credits: 500000,
     ship: { ...st.ship, cargoLevel: 5 },
-    cargo: Object.fromEntries(Object.keys(st.cargo).map((k) => [k, 0])),
+    cargo: emptyCargo(),
     costBasis: {},
   }
 }
@@ -216,7 +224,7 @@ const rich = () => {
 // 8. buying can no longer inflate net worth. Cargo is marked to cost basis,
 //    so trading moves credits but not equity until the goods actually sell.
 let s7 = createNewGame()
-s7 = { ...s7, credits: 500000, cargo: Object.fromEntries(Object.keys(s7.cargo).map((k) => [k, 0])), costBasis: {} }
+s7 = { ...s7, credits: 500000, cargo: emptyCargo(), costBasis: {} }
 const nwBefore = netWorth(s7)
 const buy7 = buyCommodity(s7, 'crystals', 10)
 if (buy7.error) {
@@ -274,7 +282,7 @@ if (buy7.error) {
 // 9. waiting a day and re-buying cannot farm net worth. This was worth ~4k cr
 //    over 40 iterations when cargo was marked to the live local price.
 let s8 = createNewGame()
-s8 = { ...s8, cargo: Object.fromEntries(Object.keys(s8.cargo).map((k) => [k, 0])), costBasis: {} }
+s8 = { ...s8, cargo: emptyCargo(), costBasis: {} }
 const nwStart = netWorth(s8)
 let farm = s8
 let farmTrades = 0
@@ -301,7 +309,7 @@ check(
 //     unbiased, and is genuinely uncertain.
 let s9 = createNewGame()
 const START_CREDITS = 500000
-s9 = { ...s9, credits: START_CREDITS, cargo: Object.fromEntries(Object.keys(s9.cargo).map((k) => [k, 0])), costBasis: {} }
+s9 = { ...s9, credits: START_CREDITS, cargo: emptyCargo(), costBasis: {} }
 s9 = advanceDay(advanceDay(advanceDay(s9)))
 const leads = getTradeLeads(s9)
 check(leads.length > 0, `intel produced ${leads.length} leads`)
@@ -447,7 +455,7 @@ let s12 = createNewGame()
 s12 = {
   ...s12,
   credits: 0,
-  cargo: Object.fromEntries(Object.keys(s12.cargo).map((k) => [k, 0])),
+  cargo: emptyCargo(),
   costBasis: {},
 }
 const zeroed = waitOnce(s12)
@@ -455,7 +463,7 @@ check(zeroed.day === s12.day + 1, 'a broke player with an empty hold can still w
 check(zeroed.credits === 0, `upkeep never drives credits negative (got ${zeroed.credits})`)
 
 let s13 = createNewGame()
-s13 = { ...s13, credits: 3, cargo: Object.fromEntries(Object.keys(s13.cargo).map((k) => [k, 0])), costBasis: {} }
+s13 = { ...s13, credits: 3, cargo: emptyCargo(), costBasis: {} }
 const partial = waitOnce(s13)
 check(
   partial.credits === 3 - dailyUpkeep(s13.ship) && partial.credits >= 0,
@@ -467,8 +475,8 @@ let s14 = createNewGame()
 s14 = {
   ...s14,
   credits: 4,
-  ship: { cargoLevel: 5, engineLevel: 5, navLevel: 5 },
-  cargo: Object.fromEntries(Object.keys(s14.cargo).map((k) => [k, 0])),
+  ship: { ...STARTING_SHIP, cargoLevel: 5 },
+  cargo: emptyCargo(),
   costBasis: {},
 }
 const capped = waitOnce(s14)
@@ -499,6 +507,105 @@ check(
 check(
   resumableIdentity(null, null) === 'none',
   'first use mints a fresh pilot',
+)
+
+// Malformed-save repair. The realistic way to reach one of these is a save
+// edited by hand or written by a future bug, not an old build, so `migrate`
+// sanitises on every load rather than only on version upgrades.
+const asSave = (over: Record<string, unknown>) => ({ ...createNewGame(), ...over }) as unknown as GameState
+const throwsWith = (over: Record<string, unknown>, fragment: string) => {
+  try {
+    migrate(asSave(over))
+    return false
+  } catch (e) {
+    return e instanceof Error && e.message.includes(fragment)
+  }
+}
+
+const withoutBasis = { ...createNewGame() } as Partial<GameState>
+delete withoutBasis.costBasis
+const basisBackfilled = migrate(withoutBasis as GameState)
+check(
+  basisBackfilled.costBasis !== undefined &&
+    typeof basisBackfilled.costBasis === 'object' &&
+    Number.isFinite(netWorth(basisBackfilled)),
+  'a save with no costBasis loads, with net worth still computable',
+)
+
+const repaired = migrate(asSave({ costBasis: { food: 12, fuel: NaN, medicine: -5 } }))
+check(
+  repaired.costBasis.food === 12 && repaired.costBasis.fuel === undefined && repaired.costBasis.medicine === undefined,
+  'a damaged costBasis keeps its good entries and drops the unusable ones',
+)
+
+const cargoFixed = migrate(asSave({ cargo: { food: 7, fuel: NaN, medicine: Infinity, ...{} } }))
+check(
+  cargoFixed.cargo.food === 7 &&
+    cargoFixed.cargo.fuel === 0 &&
+    cargoFixed.cargo.medicine === 0 &&
+    Object.keys(cargoFixed.cargo).length === Object.keys(COMMODITY_MAP).length,
+  'a damaged cargo is repaired, zero-filled, and carries no stray keys',
+)
+
+const statsFixed = migrate(asSave({ stats: {} as never }))
+check(
+  ['totalProfit', 'goodsBought', 'goodsSold', 'tripsMade', 'upgradesInvested', 'maxNetWorth'].every(
+    (k) => statsFixed.stats[k as keyof GameState['stats']] === 0,
+  ),
+  'missing stats default to zero rather than poisoning every later total',
+)
+check(
+  throwsWith({ stats: { ...createNewGame().stats, totalProfit: NaN } }, 'stats.totalProfit'),
+  'a NaN cumulative total is reported instead of silently defeating the victory gate',
+)
+check(
+  throwsWith({ costBasis: 'oops' }, 'costBasis must be an object'),
+  'a structurally impossible costBasis is reported',
+)
+
+// Quantity guards. NaN fails every `qty <= 0` and `cost > credits` comparison,
+// so before the fix it sailed straight through and wrote NaN into cargo and
+// cost basis - corruption that would then be saved.
+const loaded: GameState = {
+  ...createNewGame(),
+  credits: 500000,
+  ship: { ...createNewGame().ship, cargoLevel: 5 },
+}
+const badQtys = [NaN, Infinity, -Infinity, 1.5, 0, -1]
+check(
+  badQtys.every((q) => buyCommodity(loaded, 'food', q).error !== undefined) &&
+    badQtys.every((q) => sellCommodity(loaded, 'food', q).error !== undefined),
+  'trades reject malformed quantities outright',
+)
+check(
+  badQtys.every((q) => {
+    const r = buyCommodity(loaded, 'food', q)
+    return r.state === loaded
+  }),
+  'a rejected quantity leaves the state untouched',
+)
+const qtySafe = badQtys.reduce((st, q) => buyCommodity(st, 'food', q).state, loaded)
+check(
+  Object.values(qtySafe.cargo).every(Number.isFinite) &&
+    Object.values(qtySafe.costBasis).every((v) => v === undefined || Number.isFinite(v)),
+  'no malformed quantity can write a non-finite cargo or cost basis',
+)
+// A non-finite quantity is not merely wrong, it hangs: the fill loop compares
+// `k < units`, and `Infinity` never fails that, so the tab spins. This asserts
+// every malformed quantity quotes as exactly zero units. The fill loops clamp
+// as well as the quoting functions, so if either guard goes this fails fast
+// instead of hanging.
+const home = loaded.planetId
+const market = loaded.markets[home].food
+const buyFor = (n: number) => quoteBuy(PLANET_MAP[home]!, COMMODITY_MAP.food, market, n, loaded.day)
+const sellFor = (n: number) => quoteSell(PLANET_MAP[home]!, COMMODITY_MAP.food, market, n, loaded.day)
+check(
+  [NaN, Infinity, -Infinity, -3.7].every((n) => buyFor(n).cost === buyFor(0).cost && sellFor(n).proceeds === 0),
+  'a quote for a non-finite quantity is zero units, not an unbounded loop',
+)
+check(
+  buyFor(2.9).cost === buyFor(2).cost && sellFor(2.9).proceeds === sellFor(2).proceeds,
+  'a fractional quantity fills whole units',
 )
 
 console.log(failures === 0 ? 'ALL CHECKS PASSED' : `${failures} CHECKS FAILED`)

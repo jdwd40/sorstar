@@ -7,6 +7,13 @@
     "module": "ESNext",
     "skipLibCheck": true,
 
+    /* Browser-only. Left unset, TypeScript folds in every installed @types
+       package, so adding @types/node for the build script quietly gave the
+       browser bundle node globals - `NodeJS.Timeout` shadowed the numeric
+       handle `setTimeout` actually returns in a browser, and `process` was
+       reachable from UI code it would never run in. */
+    "types": ["vite/client"],
+
     /* Bundler mode */
     "moduleResolution": "bundler",
     "allowImportingTsExtensions": true,
