@@ -1,6 +1,6 @@
 import type { CommodityId, GameState } from '../types/game'
 import { COMMODITY_MAP, PLANETS, PLANET_MAP, cargoCapacityAtLevel } from '../data/gameData'
-import { DAILY_PRICE_DRIFT, projectListing, quoteBuy, quoteSellForecast } from './marketService'
+import { DAILY_PRICE_DRIFT, projectStock, quoteBuy, quoteSellForecast } from './marketService'
 import { distanceBetween, travelCost } from './travelService'
 
 export interface TradeLead {
@@ -123,7 +123,7 @@ function computeTradeLeads(state: GameState): TradeLead[] {
       // The destination re-prices once per day of travel, so quote the market
       // as it will actually stand on arrival - then apply the impact of
       // dumping the load into it, since `sellCommodity` prices the same way.
-      const onArrival = projectListing(planet.id, commodity.id, sellListing, state.day, days)
+      const onArrival = { ...sellListing, stock: projectStock(sellListing, days) }
 
       // Forecast, not a quote. `quoteSell` knows the arrival price exactly,
       // because the day's drift is a pure function of (planet, commodity, day)
@@ -132,13 +132,9 @@ function computeTradeLeads(state: GameState): TradeLead[] {
       // destination on its structural value, which is the expectation, and
       // brackets it with the drift it cannot see.
       const forecast = quoteSellForecast(planet, commodity, onArrival, runQty)
+      const low = quoteSellForecast(planet, commodity, onArrival, runQty, 1 - DAILY_PRICE_DRIFT)
+      const high = quoteSellForecast(planet, commodity, onArrival, runQty, 1 + DAILY_PRICE_DRIFT)
       const sell = forecast.unitPrice
-      const sellLow = quoteSellForecast(
-        planet, commodity, onArrival, runQty, 1 - DAILY_PRICE_DRIFT,
-      ).unitPrice
-      const sellHigh = quoteSellForecast(
-        planet, commodity, onArrival, runQty, 1 + DAILY_PRICE_DRIFT,
-      ).unitPrice
 
       // Net is taken from the whole-credit totals rather than from the average
       // unit prices: multiplying the averages back out by `runQty` reintroduces
@@ -150,11 +146,15 @@ function computeTradeLeads(state: GameState): TradeLead[] {
           planetId: planet.id,
           buy: buyQuote.unitPrice,
           sell,
-          sellLow,
-          sellHigh,
+          sellLow: low.unitPrice,
+          sellHigh: high.unitPrice,
           profit: net,
-          worstCase: sellLow * runQty - spend,
-          bestCase: sellHigh * runQty - spend,
+          // Taken from the whole-credit totals, not rebuilt by multiplying the
+          // average unit price back out by `runQty` - that reintroduces float
+          // error and leaves the band a hair wider than the outcomes it is
+          // supposed to bracket.
+          worstCase: low.proceeds - spend,
+          bestCase: high.proceeds - spend,
           runQty,
           days,
         }
@@ -177,8 +177,8 @@ function computeTradeLeads(state: GameState): TradeLead[] {
         runProfit: best.profit,
         sellPriceLow: best.sellLow,
         sellPriceHigh: best.sellHigh,
-        worstCase: Math.round(best.worstCase),
-        bestCase: Math.round(best.bestCase),
+        worstCase: best.worstCase,
+        bestCase: best.bestCase,
         travelDays: best.days,
       })
     }

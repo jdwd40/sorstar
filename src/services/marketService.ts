@@ -57,9 +57,8 @@ function stockFactor(stock: number, baseStock: number): number {
 
 /**
  * Stock regeneration for one day: exponential pull back toward `baseStock`,
- * clamped to the market's ceiling. Shared by `advanceDay` and the price
- * projection below so a projected arrival can never drift from the price the
- * player actually lands on.
+ * clamped to the market's ceiling. Shared by `advanceDay` and `projectStock`,
+ * so a projected arrival can never drift from the stock the player lands on.
  */
 function regenerateStock(stock: number, baseStock: number, stockMax: number): number {
   const regen = Math.max(0, stock + (baseStock - stock) * 0.2)
@@ -457,33 +456,21 @@ export function advanceDay(state: GameState): GameState {
 }
 
 /**
- * The listing as it will stand `days` ticks from now, with no player action.
+ * The stock a market will hold after `days` of regeneration.
  *
- * The per-day random factor is a pure hash of (planet, commodity, day), so a
- * future price is fully determined - the intel panel can quote the market the
- * player actually lands on rather than today's. Regenerates stock in exactly
- * the order `advanceDay` does, so a projection can never drift from reality.
+ * Deliberately returns stock and not a `MarketListing`. Projecting the price
+ * too would hand intel a price oracle - the arrival price is the structural
+ * value times the day's drift, and the drift is the one thing the player is
+ * meant not to know until they get there. Returning a listing invited exactly
+ * that misuse, so the type no longer permits it. Stock is fully predictable:
+ * it only ever moves toward the market's baseline.
  */
-export function projectListing(
-  planetId: string,
-  commodityId: CommodityId,
-  listing: MarketListing,
-  fromDay: number,
-  days: number,
-): MarketListing {
-  const planet = PLANET_MAP[planetId]
-  if (!planet) return listing
-  const commodity = COMMODITY_MAP[commodityId]
-  let current = listing
-  for (let i = 1; i <= days; i++) {
-    const next: MarketListing = {
-      ...current,
-      stock: regenerateStock(current.stock, current.baseStock, current.stockMax),
-      prevPrice: current.price,
-    }
-    current = { ...next, price: marketPrice(planet, commodity, next, fromDay + i) }
+export function projectStock(listing: MarketListing, days: number): number {
+  let stock = listing.stock
+  for (let i = 0; i < days; i++) {
+    stock = regenerateStock(stock, listing.baseStock, listing.stockMax)
   }
-  return current
+  return stock
 }
 
 export function cargoUsed(state: GameState): number {

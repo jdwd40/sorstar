@@ -334,7 +334,9 @@ for (let d = 0; d < 150 && intelChecked < 250; d++) {
     intelChecked++
     quoted += lead.runProfit
     realised += got
-    if (got >= lead.worstCase - 1 && got <= lead.bestCase + 1) insideBand++
+    // No slack: the edges are built from whole-credit totals, so an outcome
+    // sitting exactly on an edge is a real outcome, not a rounding artefact.
+    if (got >= lead.worstCase && got <= lead.bestCase) insideBand++
     if (Math.abs(got - lead.runProfit) > 1) mismatched++
   }
   walk = advanceDay(walk)
@@ -372,6 +374,14 @@ const risky = leads.find((l) => l.worstCase < 0)
 check(
   leads.every((l) => l.sellPriceLow < l.sellPriceHigh && l.worstCase <= l.runProfit && l.runProfit <= l.bestCase),
   'leads bracket their own expectation',
+)
+// The band edges come from whole-credit totals, so they land on integers.
+// Rebuilding them by multiplying the average unit price back out by the
+// quantity reintroduces float error and widens the band a hair past the
+// outcomes it is supposed to contain.
+check(
+  leads.every((l) => Number.isInteger(l.runProfit) && Number.isInteger(l.worstCase) && Number.isInteger(l.bestCase)),
+  'lead profits and band edges are whole credits',
 )
 if (risky) {
   check(true, `a lead can have a negative worst case (${risky.worstCase} cr) and is still surfaced`)
