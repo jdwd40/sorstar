@@ -17,9 +17,24 @@ function hashString(str: string): number {
   return hash >>> 0
 }
 
+/**
+ * How far a market's daily re-pricing may sit either side of its structural
+ * value.
+ *
+ * Centred on 1.0, so the expected price of any market is exactly its structural
+ * price - which is what makes intel's forecast honest rather than optimistic.
+ * At +/-4% this noise was smaller than the impact of any interesting order, so
+ * the market barely moved and order size was the only force that mattered. The
+ * drift is what makes a market a market: waiting, and arriving, now mean
+ * something.
+ */
+export const DAILY_PRICE_DRIFT = 0.1
+
 function randomFactor(planetId: string, commodityId: string, day: number): number {
   const h = hashString(`${planetId}:${commodityId}:${day}`)
-  return 0.96 + (h % 1000) / 1000 * 0.08
+  return (
+    1 - DAILY_PRICE_DRIFT + ((h % 1000) / 1000) * DAILY_PRICE_DRIFT * 2
+  )
 }
 
 const baseStockFor = (commodityId: CommodityId): number => {
@@ -67,15 +82,30 @@ function regenerateStock(stock: number, baseStock: number, stockMax: number): nu
  */
 const priceCache = new Map<string, number>()
 
+/**
+ * The price a market would fetch if it never drifted: its planet's appetite for
+ * the goods, scaled by how scarce the stock is. The daily draw in `rawPrice`
+ * is the only unknowable part, which is what intel is blind to.
+ */
+function structuralPrice(
+  planet: Planet,
+  commodity: Commodity,
+  listing: MarketListing,
+): number {
+  const factor =
+    planet.priceMods[commodity.id] * stockFactor(listing.stock, listing.baseStock)
+  return commodity.basePrice * factor
+}
+
 function rawPrice(
   planet: Planet,
   commodity: Commodity,
   listing: MarketListing,
   day: number,
 ): number {
-  const factor =
-    planet.priceMods[commodity.id] * stockFactor(listing.stock, listing.baseStock)
-  return commodity.basePrice * factor * randomFactor(planet.id, commodity.id, day)
+  return (
+    structuralPrice(planet, commodity, listing) * randomFactor(planet.id, commodity.id, day)
+  )
 }
 
 function marketPrice(
@@ -147,6 +177,8 @@ function refreshPrice(
   listing.price = marketPrice(planet, COMMODITY_MAP[commodityId], listing, day)
 }
 
+type Pricer = (level: MarketListing) => number
+
 /**
  * Walks a buy through the book one unit at a time: each unit fills at the
  * price on the books *before* it is bought, and the market re-prices as the
@@ -166,20 +198,14 @@ function refreshPrice(
  * The side effect is a good one: a 1-unit trade always fills at exactly the
  * price on screen.
  */
-function buyFill(
-  planet: Planet,
-  commodity: Commodity,
-  listing: MarketListing,
-  qty: number,
-  day: number,
-): { cost: number; price: number } {
+function buyFill(listing: MarketListing, qty: number, priceAt: Pricer): { cost: number; stock: number } {
   let stock = listing.stock
   let cost = 0
   for (let k = 0; k < qty; k++) {
-    cost += marketPrice(planet, commodity, { ...listing, stock }, day)
+    cost += priceAt({ ...listing, stock })
     stock = Math.max(0, stock - 1)
   }
-  return { cost, price: marketPrice(planet, commodity, { ...listing, stock }, day) }
+  return { cost, stock }
 }
 
 /**
@@ -198,20 +224,31 @@ function buyFill(
  * is the honest answer - you are moving the market you are quoting - while a
  * 1-unit purchase still fills at exactly it.
  */
-function sellFill(
-  planet: Planet,
-  commodity: Commodity,
-  listing: MarketListing,
-  qty: number,
-  day: number,
-): { proceeds: number; price: number } {
+function sellFill(listing: MarketListing, qty: number, priceAt: Pricer): { proceeds: number; stock: number } {
   let stock = listing.stock
   let proceeds = 0
   for (let k = 0; k < qty; k++) {
     stock = Math.min(listing.stockMax, stock + 1)
-    proceeds += marketPrice(planet, commodity, { ...listing, stock }, day)
+    proceeds += priceAt({ ...listing, stock })
   }
-  return { proceeds, price: marketPrice(planet, commodity, { ...listing, stock }, day) }
+  return { proceeds, stock }
+}
+
+/** Prices a book level with the day's actual draw - what a trade really fills at. */
+function livePricer(planet: Planet, commodity: Commodity, day: number): Pricer {
+  return (level) => marketPrice(planet, commodity, level, day)
+}
+
+/**
+ * Prices a book level without the day's draw, scaled by `driftScale`.
+ *
+ * The draw is a single multiplier applied to every fill in the trade, so
+ * scaling the whole structural curve by it reproduces that day's proceeds
+ * exactly. That is what makes the forecast band honest at the extremes rather
+ * than a guess about how impact interacts with drift.
+ */
+function forecastPricer(planet: Planet, commodity: Commodity, driftScale: number): Pricer {
+  return (level) => Math.max(1, Math.round(structuralPrice(planet, commodity, level) * driftScale))
 }
 
 /**
@@ -234,13 +271,34 @@ export function quoteBuy(
   day: number,
 ): { unitPrice: number; cost: number; price: number; stock: number } {
   const units = Math.max(0, Math.floor(qty))
-  const { cost, price } = buyFill(planet, commodity, listing, units, day)
+  const { cost, stock } = buyFill(listing, units, livePricer(planet, commodity, day))
   return {
     unitPrice: units > 0 ? cost / units : marketPrice(planet, commodity, listing, day),
     cost,
-    price,
-    stock: Math.max(0, listing.stock - units),
+    price: marketPrice(planet, commodity, { ...listing, stock }, day),
+    stock,
   }
+}
+
+/**
+ * What a sale of `qty` is worth in expectation, ignoring the day's draw.
+ *
+ * This is the honest ceiling on foresight: `randomFactor` is a pure function of
+ * (planet, commodity, day), so the live quote knows the arrival price exactly.
+ * Routing intel through here instead is what stops the Navigation Array from
+ * being a solver - the player sees the trend, not the outcome. Pass a
+ * `driftScale` of `1 -/+ DAILY_PRICE_DRIFT` for the band's edges.
+ */
+export function quoteSellForecast(
+  planet: Planet,
+  commodity: Commodity,
+  listing: MarketListing,
+  qty: number,
+  driftScale = 1,
+): { unitPrice: number; proceeds: number } {
+  const units = Math.max(0, Math.floor(qty))
+  const { proceeds } = sellFill(listing, units, forecastPricer(planet, commodity, driftScale))
+  return { unitPrice: units > 0 ? proceeds / units : 0, proceeds }
 }
 
 /**
@@ -257,12 +315,12 @@ export function quoteSell(
   day: number,
 ): { unitPrice: number; proceeds: number; price: number; stock: number } {
   const units = Math.max(0, Math.floor(qty))
-  const { proceeds, price } = sellFill(planet, commodity, listing, units, day)
+  const { proceeds, stock } = sellFill(listing, units, livePricer(planet, commodity, day))
   return {
     unitPrice: units > 0 ? proceeds / units : marketPrice(planet, commodity, listing, day),
     proceeds,
-    price,
-    stock: Math.min(listing.stockMax, listing.stock + units),
+    price: marketPrice(planet, commodity, { ...listing, stock }, day),
+    stock,
   }
 }
 

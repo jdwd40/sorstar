@@ -321,9 +321,14 @@ warpTimersRef.current.forEach(clearTimeout)
                 <tr className="text-left text-slate-400 border-b border-slate-700">
                   <th className="py-2 pr-4">Good</th>
                   <th className="py-2 pr-4">Buy Here</th>
-                  <th className="py-2 pr-4">Sell At</th>
+                  <th
+                    className="py-2 pr-4"
+                    title="A forecast range, not a quote. The destination re-prices while you are in transit and you cannot see where it opens."
+                  >
+                    Sell At (est.)
+                  </th>
                   <th className="py-2 pr-4 text-right">Spread</th>
-                  <th className="py-2 text-right">Potential</th>
+                  <th className="py-2 text-right">Expected</th>
                 </tr>
               </thead>
               <tbody>
@@ -341,20 +346,31 @@ warpTimersRef.current.forEach(clearTimeout)
                       {lead.originPlanetName} · {fmtMoney(lead.originPrice)}
                     </td>
                     <td className="py-2 pr-4 text-amber-300">
-                      {lead.targetPlanetName} · {fmtMoney(lead.targetPrice)}
+                      {lead.targetPlanetName} · {fmtMoney(lead.sellPriceLow)}–
+                      {fmtMoney(lead.sellPriceHigh)}
                     </td>
                     <td className="py-2 pr-4 text-right text-white font-semibold">
                       +{fmtMoney(lead.spread)}
                     </td>
                     <td className="py-2 text-right">
-                      <span className="text-emerald-400 font-semibold">+{fmtMoney(lead.runProfit)}</span>
+                      <span
+                        className="font-semibold text-emerald-400"
+                        title="Expected profit: the arrival price is a forecast, so this is a fair average over where the market could open."
+                      >
+                        +{fmtMoney(lead.runProfit)}
+                      </span>
                       <div className="text-[10px] text-slate-500">
-                        after fuel & sell impact · load {lead.runQty} units
+                        expected · load {lead.runQty} units · arrives in {lead.travelDays} day
+                        {lead.travelDays > 1 ? 's' : ''}
                       </div>
-                      {/* Arrival is when the quoted price is actually live, so
-                          the travel time is part of the lead's cost. */}
-                      <div className="text-[10px] text-slate-500">
-                        arrives in {lead.travelDays} day{lead.travelDays > 1 ? 's' : ''}
+                      {/* The downside is stated, not buried: a lead can still
+                          land in the red if the market opens against you. */}
+                      <div
+                        className={`text-[10px] ${
+                          lead.worstCase < 0 ? 'text-rose-400/80' : 'text-slate-500'
+                        }`}
+                      >
+                        worst case {fmtMoney(lead.worstCase)}
                       </div>
                     </td>
                   </tr>

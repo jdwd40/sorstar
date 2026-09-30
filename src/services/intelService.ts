@@ -1,6 +1,6 @@
 import type { CommodityId, GameState } from '../types/game'
 import { COMMODITY_MAP, PLANETS, PLANET_MAP, cargoCapacityAtLevel } from '../data/gameData'
-import { projectListing, quoteBuy, quoteSell } from './marketService'
+import { DAILY_PRICE_DRIFT, projectListing, quoteBuy, quoteSellForecast } from './marketService'
 import { distanceBetween, travelCost } from './travelService'
 
 export interface TradeLead {
@@ -15,7 +15,17 @@ export interface TradeLead {
   spread: number
   holding: number
   runQty: number
+  /**
+   * Expected net profit. The *expected* sell price is knowable - it is the
+   * market's structural value on arrival - but the day's drift is not, so this
+   * is a fair average over outcomes rather than a promise. `worstCase` and
+   * `bestCase` are the same run at the edges of the drift.
+   */
   runProfit: number
+  sellPriceLow: number
+  sellPriceHigh: number
+  worstCase: number
+  bestCase: number
   travelDays: number
 }
 
@@ -28,10 +38,15 @@ export interface TradeLead {
  * could load right now (cargo space, local stock, credits left after that
  * destination's fuel) and the net profit after the one-way fuel cost.
  *
- * Both ends of the run are quoted the way the trade will actually settle,
- * not at the prices on screen right now. The destination re-prices once per
- * day of travel, and each side moves against you the moment you trade - so
- * quoting sticker prices promises profit the run cannot deliver.
+ * The cost side is exact and the return side is not, which is the whole point.
+ * You can see today's price at the origin, and you know the destination's stock
+ * will have regenerated on the way - so what you will *pay* is knowable. What
+ * you will *get* is not: each market also carries a daily drift the player
+ * cannot observe until they arrive. So leads quote an expected profit bracketed
+ * by the drift, and the Navigation Array is a forecast rather than a solution.
+ * Quoting the exact arrival price was possible - the drift is a pure function
+ * of (planet, commodity, day) - but it made the mid-game arithmetic instead of
+ * a judgement call.
  */
 /**
  * Leads are pure in `state`, and quoting one walks the book across every
@@ -73,6 +88,10 @@ function computeTradeLeads(state: GameState): TradeLead[] {
       profit: number
       runQty: number
       days: number
+      sellLow: number
+      sellHigh: number
+      worstCase: number
+      bestCase: number
     } | null = null
 
     for (const planet of PLANETS) {
@@ -104,19 +123,41 @@ function computeTradeLeads(state: GameState): TradeLead[] {
       // The destination re-prices once per day of travel, so quote the market
       // as it will actually stand on arrival - then apply the impact of
       // dumping the load into it, since `sellCommodity` prices the same way.
-      const arrivalDay = state.day + days
       const onArrival = projectListing(planet.id, commodity.id, sellListing, state.day, days)
-      const sellQuote = quoteSell(planet, commodity, onArrival, runQty, arrivalDay)
-      const buy = buyQuote.unitPrice
-      const sell = sellQuote.unitPrice
 
-      // Net is taken from the two whole-credit totals rather than from the
-      // average unit prices: multiplying the averages back out by `runQty`
-      // reintroduces float error (a quoted 252.99999999999994 against a
-      // realised 253), and the totals are what the run actually banks.
-      const net = sellQuote.proceeds - buyQuote.cost - travel
+      // Forecast, not a quote. `quoteSell` knows the arrival price exactly,
+      // because the day's drift is a pure function of (planet, commodity, day)
+      // - so routing intel through it handed the player a solved problem and
+      // turned the Navigation Array into a calculator. The forecast prices the
+      // destination on its structural value, which is the expectation, and
+      // brackets it with the drift it cannot see.
+      const forecast = quoteSellForecast(planet, commodity, onArrival, runQty)
+      const sell = forecast.unitPrice
+      const sellLow = quoteSellForecast(
+        planet, commodity, onArrival, runQty, 1 - DAILY_PRICE_DRIFT,
+      ).unitPrice
+      const sellHigh = quoteSellForecast(
+        planet, commodity, onArrival, runQty, 1 + DAILY_PRICE_DRIFT,
+      ).unitPrice
+
+      // Net is taken from the whole-credit totals rather than from the average
+      // unit prices: multiplying the averages back out by `runQty` reintroduces
+      // float error, and the totals are what the run actually banks.
+      const spend = buyQuote.cost + travel
+      const net = forecast.proceeds - spend
       if (net > 0 && (!best || net > best.profit)) {
-        best = { planetId: planet.id, buy, sell, profit: net, runQty, days }
+        best = {
+          planetId: planet.id,
+          buy: buyQuote.unitPrice,
+          sell,
+          sellLow,
+          sellHigh,
+          profit: net,
+          worstCase: sellLow * runQty - spend,
+          bestCase: sellHigh * runQty - spend,
+          runQty,
+          days,
+        }
       }
     }
 
@@ -134,6 +175,10 @@ function computeTradeLeads(state: GameState): TradeLead[] {
         holding: state.cargo[commodity.id] ?? 0,
         runQty: best.runQty,
         runProfit: best.profit,
+        sellPriceLow: best.sellLow,
+        sellPriceHigh: best.sellHigh,
+        worstCase: Math.round(best.worstCase),
+        bestCase: Math.round(best.bestCase),
         travelDays: best.days,
       })
     }

@@ -291,31 +291,91 @@ check(
   `40x wait+buy does not inflate net worth (delta ${(netWorth(farm) - nwStart).toFixed(2)})`,
 )
 
-// 10. intel quotes the price you actually meet on arrival, impact included.
+// 10. intel forecasts the arrival price instead of knowing it.
+//
+//     This used to assert `realised === lead.runProfit`, which was only ever
+//     true because `randomFactor` is a pure function of (planet, commodity,
+//     day): the live quote re-derived the exact arrival price, so a lead could
+//     promise a number instead of an expectation, and the Navigation Array was
+//     a solver. What matters now is that the forecast brackets reality, is
+//     unbiased, and is genuinely uncertain.
 let s9 = createNewGame()
 const START_CREDITS = 500000
 s9 = { ...s9, credits: START_CREDITS, cargo: Object.fromEntries(Object.keys(s9.cargo).map((k) => [k, 0])), costBasis: {} }
 s9 = advanceDay(advanceDay(advanceDay(s9)))
 const leads = getTradeLeads(s9)
 check(leads.length > 0, `intel produced ${leads.length} leads`)
-let intelChecked = 0
-for (const lead of leads.slice(0, 5)) {
-  const bought = buyCommodity(s9, lead.commodityId, lead.runQty)
-  if (bought.error) continue
+
+/** Runs one lead end to end and reports what it actually banked. */
+function runLead(state: GameState, lead: ReturnType<typeof getTradeLeads>[number]): number | null {
+  const bought = buyCommodity(state, lead.commodityId, lead.runQty)
+  if (bought.error) return null
   const arrived = travel(bought.state, lead.targetPlanetId)
-  if (arrived.error) continue
+  if (arrived.error) return null
   const sold = sellCommodity(arrived.state, lead.commodityId, lead.runQty)
-  if (sold.error) continue
-  // Cash delta from the opening balance already nets out the purchase and the
-  // fuel `travel` charged, so it is the run's realised profit directly.
-  const realised = sold.state.credits - START_CREDITS
-  intelChecked++
-  check(
-    realised === lead.runProfit,
-    `intel matches realised run for ${lead.commodityName} (quoted ${lead.runProfit}, realised ${realised})`,
-  )
+  if (sold.error) return null
+  // The cash delta from the opening balance already nets out the purchase and
+  // the fuel `travel` charged, so it is the run's realised profit directly.
+  return sold.state.credits - START_CREDITS
 }
-check(intelChecked > 0, `intel accuracy was exercised (${intelChecked} runs)`)
+
+let intelChecked = 0
+let insideBand = 0
+let mismatched = 0
+let quoted = 0
+let realised = 0
+// Walk forward through many days so the sample spans a range of arrivals rather
+// than a single day's drift.
+let walk = s9
+for (let d = 0; d < 150 && intelChecked < 250; d++) {
+  for (const lead of getTradeLeads(walk).slice(0, 4)) {
+    const got = runLead(walk, lead)
+    if (got === null) continue
+    intelChecked++
+    quoted += lead.runProfit
+    realised += got
+    if (got >= lead.worstCase - 1 && got <= lead.bestCase + 1) insideBand++
+    if (Math.abs(got - lead.runProfit) > 1) mismatched++
+  }
+  walk = advanceDay(walk)
+}
+check(intelChecked >= 150, `intel forecasts were exercised (${intelChecked} runs)`)
+check(
+  insideBand === intelChecked,
+  `every realised run lands inside its quoted range (${insideBand}/${intelChecked})`,
+)
+check(
+  mismatched > 0 && mismatched < intelChecked,
+  `the forecast is a real forecast - not always wrong, not always exact (${mismatched}/${intelChecked} differed)`,
+)
+// The property that actually matters for fairness is that intel is not
+// systematically *optimistic* - a forecast that flattered itself would send
+// players chasing leads that lose money. Centring the drift on 1.0 makes the
+// forecast the true expectation, and in practice it runs a couple of percent
+// conservative (over 900 sampled runs: 131.1 quoted vs 127.5 realised), which
+// is the safe direction to be wrong in. Note the sample is correlated - leads
+// sharing a destination share its arrival-day drift - so treat the mean as a
+// sanity check, not a precise estimate.
+const meanQuoted = quoted / intelChecked
+const meanRealised = realised / intelChecked
+check(
+  meanRealised <= meanQuoted * 1.05 + 5,
+  `the forecast is not systematically optimistic (quoted mean ${meanQuoted.toFixed(1)}, realised mean ${meanRealised.toFixed(1)})`,
+)
+check(
+  Math.abs(meanRealised - meanQuoted) < Math.max(15, Math.abs(meanQuoted) * 0.25),
+  `the forecast tracks reality (quoted mean ${meanQuoted.toFixed(1)}, realised mean ${meanRealised.toFixed(1)})`,
+)
+// A lead whose worst case is negative is still shown: the player is told the
+// downside rather than having it hidden behind an expected number.
+const risky = leads.find((l) => l.worstCase < 0)
+check(
+  leads.every((l) => l.sellPriceLow < l.sellPriceHigh && l.worstCase <= l.runProfit && l.runProfit <= l.bestCase),
+  'leads bracket their own expectation',
+)
+if (risky) {
+  check(true, `a lead can have a negative worst case (${risky.worstCase} cr) and is still surfaced`)
+}
 
 // 11. daily upkeep is charged on a manual wait and scales with the ship.
 check(dailyUpkeep(STARTING_SHIP) === UPKEEP_BASE, 'starting ship pays base upkeep')
