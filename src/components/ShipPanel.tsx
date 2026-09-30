@@ -2,6 +2,7 @@ import type { GameState, ShipUpgradeType } from '../types/game'
 import {
   UPGRADE_META,
   cargoCapacityAtLevel,
+  dailyUpkeep,
   fuelCostAtLevel,
 } from '../data/gameData'
 import { isMaxUpgrade, nextUpgradeCost } from '../services/playerService'
@@ -146,9 +147,11 @@ export default function ShipPanel({ game, travelUpgrade, resetGame }: ShipPanelP
             </div>
           </div>
           <div className="bg-slate-800/50 rounded-lg p-3 text-center">
-            <div className="text-xs uppercase tracking-wider text-slate-400">Trips</div>
-            <div className="text-lg font-bold text-white">{fmt(game.stats.tripsMade)}</div>
-            <div className="text-xs text-slate-500">flights logged</div>
+            <div className="text-xs uppercase tracking-wider text-slate-400">Upkeep</div>
+            <div className="text-lg font-bold text-white">{dailyUpkeep(game.ship)} cr</div>
+            <div className="text-xs text-slate-500">
+              per day waited · {fmt(game.stats.tripsMade)} trips
+            </div>
           </div>
         </div>
       </div>

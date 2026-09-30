@@ -32,11 +32,13 @@ function ArrivalReport({
   const meta = PLANET_TYPE_META[dest?.type ?? 'frontier']
 
   return (
-    <Modal onClose={onClose}>
+    <Modal onClose={onClose} labelledBy="arrival-title">
       <div className="flex items-center gap-3 mb-4">
         <span className="text-4xl">{dest?.icon}</span>
         <div>
-          <h2 className="text-2xl font-bold text-white">Arrived at {dest?.name}</h2>
+          <h2 id="arrival-title" className="text-2xl font-bold text-white">
+            Arrived at {dest?.name}
+          </h2>
           <p className="text-sm text-slate-400">
             {info.distanceLy} ly · {fmtMoney(info.fuelCost ?? 0)} fuel · day {fmt(info.arriveDay ?? game.day)}
             {dest && (
@@ -346,7 +348,14 @@ warpTimersRef.current.forEach(clearTimeout)
                     </td>
                     <td className="py-2 text-right">
                       <span className="text-emerald-400 font-semibold">+{fmtMoney(lead.runProfit)}</span>
-                      <div className="text-[10px] text-slate-500">after fuel & sell impact · load {lead.runQty} units</div>
+                      <div className="text-[10px] text-slate-500">
+                        after fuel & sell impact · load {lead.runQty} units
+                      </div>
+                      {/* Arrival is when the quoted price is actually live, so
+                          the travel time is part of the lead's cost. */}
+                      <div className="text-[10px] text-slate-500">
+                        arrives in {lead.travelDays} day{lead.travelDays > 1 ? 's' : ''}
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -357,11 +366,11 @@ warpTimersRef.current.forEach(clearTimeout)
       </div>
 
       {confirmDest && (
-        <Modal onClose={() => setConfirmDest(null)}>
+        <Modal onClose={() => setConfirmDest(null)} labelledBy="confirm-jump-title">
           <div className="flex items-center gap-3 mb-4">
             <span className="text-4xl">{confirmDest.icon}</span>
             <div>
-              <h2 className="text-2xl font-bold text-white">
+              <h2 id="confirm-jump-title" className="text-2xl font-bold text-white">
                 Plot course to {confirmDest.name}?
               </h2>
               <p className="text-sm text-slate-400">{confirmDest.description}</p>

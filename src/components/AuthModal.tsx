@@ -14,8 +14,10 @@ export default function AuthModal({ onClose }: { onClose: () => void }) {
 
   if (!authAvailable) {
     return (
-      <Modal onClose={onClose}>
-        <h2 className="text-xl font-bold mb-2">Accounts unavailable</h2>
+      <Modal onClose={onClose} labelledBy="auth-unavailable-title">
+        <h2 id="auth-unavailable-title" className="text-xl font-bold mb-2">
+          Accounts unavailable
+        </h2>
         <p className="text-slate-300 text-sm mb-6">
           Saves are stored in this browser only. Start the app with a
           PocketBase backend (<code>VITE_PB_URL</code>) to unlock accounts.
@@ -52,8 +54,8 @@ export default function AuthModal({ onClose }: { onClose: () => void }) {
   }
 
   return (
-    <Modal onClose={onClose}>
-      <h2 className="text-xl font-bold mb-1">
+    <Modal onClose={onClose} labelledBy="auth-title">
+      <h2 id="auth-title" className="text-xl font-bold mb-1">
         {isRegister ? 'Create an account' : 'Sign in'}
       </h2>
       <p className="text-slate-400 text-sm mb-6">

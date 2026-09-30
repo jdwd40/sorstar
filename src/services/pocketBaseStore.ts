@@ -2,7 +2,7 @@ import PocketBase from 'pocketbase'
 import type { GameState } from '../types/game'
 import { SAVE_KEY } from '../data/gameData'
 import { migrate } from './migrate'
-import type { AuthStore, AuthUser, GameStore } from './gameStore'
+import type { AuthStore, AuthUser, GameStore, SessionLostReason } from './gameStore'
 
 const USERS_COLLECTION = 'users'
 const SAVES_COLLECTION = 'saves'
@@ -193,6 +193,10 @@ class PocketBaseAuthStore implements AuthStore {
     }
     const flag = { email, name: name?.trim() || 'Pilot' }
     writeAccountFlag(flag)
+    // The account is now the identity of record, so the anonymous pilot it was
+    // created from must not be able to reclaim the session later. Its save has
+    // either been adopted below or was already superseded by the account's own.
+    clearPilotCredentials()
     await this.adoptSave(previous)
     return null
   }
@@ -216,6 +220,10 @@ class PocketBaseAuthStore implements AuthStore {
       email: (model?.email as string) ?? email,
       name: (model?.name as string) ?? '',
     })
+    // See register(): the account supersedes the anonymous pilot, so retire the
+    // pilot credentials rather than leave a second identity that could be
+    // resumed in its place.
+    clearPilotCredentials()
     await this.adoptSave(previous)
     return null
   }
@@ -289,19 +297,47 @@ const currentId = this.pb.authStore.model?.id as string | undefined
 }
 
 /**
+ * Session-recovery policy: which stored identity, if any, may be resumed
+ * without asking the player for a password.
+ *
+ * Exported (and covered by scripts/verify-game.ts) because the rule is a
+ * security-relevant invariant that would otherwise be buried in a long async
+ * method, where a refactor could easily reintroduce the bug:
+ *
+ *   - `account`  -> never. The account flag carries no password, and the pilot
+ *     credentials sharing this browser belong to a *different*, older identity.
+ *     `register`/`login` copy the pilot's save into the account but leave the
+ *     old pilot record in place, so authenticating with those credentials
+ *     would silently drop the player into a stale pilot holding an out-of-date
+ *     save - and report success, because that pilot still exists.
+ *   - `pilot`    -> yes. These credentials were minted for this browser and
+ *     nothing else shares them.
+ *   - `none`     -> first use; mint a fresh pilot.
+ */
+export function resumableIdentity(
+  account: AccountFlag | null,
+  pilot: PilotCredentials | null,
+): 'account-needs-login' | 'pilot' | 'none' {
+  if (account) return 'account-needs-login'
+  if (pilot) return 'pilot'
+  return 'none'
+}
+
+/**
  * GameStore backed by a PocketBase server.
  *
  * By default each browser gets its own persistent anonymous PocketBase account,
  * created lazily on first use, so every device keeps its own save. Signing up /
  * signing in through `auth` switches the save to a real account instead. The
  * session token is stored by the SDK's auth store, so a reload on the same
- * browser finds it again; expired sessions are resumed via token refresh (and
- * finally the stored pilot credentials) so the identity - and its save -
- * survive token expiry.
+ * browser finds it again; expired sessions are resumed via token refresh, and
+ * failing that via the stored pilot credentials, so the identity - and its
+ * save - survive token expiry. See `resumableIdentity` for the rule that keeps
+ * a registered account from ever being resumed as a pilot.
  */
 export class PocketBaseGameStore implements GameStore {
   readonly auth: AuthStore
-  onPilotLost?: () => void
+  onPilotLost?: (reason: SessionLostReason) => void
 
   private readonly pb: PocketBase
   private initPromise: Promise<void> | null = null
@@ -502,13 +538,22 @@ export class PocketBaseGameStore implements GameStore {
       }
     }
 
-    // From here we are no longer resuming a registered account session.
-    clearAccountFlag()
-
-    // Fall back to this browser's stored pilot credentials - covers the case
-    // where even the refresh token has expired (or the SDK storage was lost).
+    // From here we can no longer resume the current session. `resumableIdentity`
+    // encodes why a registered account is never resumed as a pilot.
+    const account = readAccountFlag()
     const pilot = readPilotCredentials()
-    if (pilot) {
+    const resumable = resumableIdentity(account, pilot)
+
+    if (resumable === 'account-needs-login') {
+      // Cannot resume the account without its password (the flag holds only
+      // email and name), so mint a fresh pilot to keep the game playable and
+      // tell the player to sign in again.
+      clearAccountFlag()
+      this.onPilotLost?.('account')
+    } else if (resumable === 'pilot' && pilot) {
+      // No account on this browser: fall back to the stored pilot credentials.
+      // Covers the case where even the refresh token has expired (or the SDK
+      // storage was lost).
       try {
         await this.pb.collection(USERS_COLLECTION).authWithPassword(pilot.email, pilot.password)
         if (this.pb.authStore.isValid && this.pb.authStore.model) return
@@ -518,7 +563,7 @@ export class PocketBaseGameStore implements GameStore {
         // The old pilot may own a save record we can never reach (its identity
         // is rejected, not just its session). Surface that so the player isn't
         // silently restarted from 1200 cr with no explanation.
-        this.onPilotLost?.()
+        this.onPilotLost?.('pilot')
       }
     }
 

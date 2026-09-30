@@ -35,9 +35,20 @@ const baseStockFor = (commodityId: CommodityId): number => {
   }
 }
 
-export function stockFactor(stock: number, baseStock: number): number {
+function stockFactor(stock: number, baseStock: number): number {
   const s = Math.max(0, stock)
   return 1 + ((baseStock - s) / baseStock) * 0.6
+}
+
+/**
+ * Stock regeneration for one day: exponential pull back toward `baseStock`,
+ * clamped to the market's ceiling. Shared by `advanceDay` and the price
+ * projection below so a projected arrival can never drift from the price the
+ * player actually lands on.
+ */
+function regenerateStock(stock: number, baseStock: number, stockMax: number): number {
+  const regen = Math.max(0, stock + (baseStock - stock) * 0.2)
+  return Math.max(0, Math.min(stockMax, Math.round(regen)))
 }
 
 function marketPrice(
@@ -90,7 +101,7 @@ export function createMarkets(planetIds: string[], day: number): Markets {
   return markets
 }
 
-export function refreshPrice(
+function refreshPrice(
   market: Record<CommodityId, MarketListing>,
   planetId: string,
   commodityId: CommodityId,
@@ -100,6 +111,42 @@ export function refreshPrice(
   const listing = market[commodityId]
   if (!planet || !listing) return
   listing.price = marketPrice(planet, COMMODITY_MAP[commodityId], listing, day)
+}
+
+/**
+ * The unit price a buy of `qty` settles at, plus the stock it leaves behind.
+ *
+ * The market panel, `buyCommodity`, and the intel panel all read the fill
+ * price from here, so a quoted price can never disagree with the charge.
+ * The returned `stock` is the value the caller must persist alongside it.
+ */
+export function quoteBuy(
+  planet: Planet,
+  commodity: Commodity,
+  listing: MarketListing,
+  qty: number,
+  day: number,
+): { unitPrice: number; cost: number; stock: number } {
+  const stock = Math.max(0, listing.stock - qty)
+  const unitPrice = marketPrice(planet, commodity, { ...listing, stock }, day)
+  return { unitPrice, cost: qty * unitPrice, stock }
+}
+
+/**
+ * The unit price a sale of `qty` settles at, plus the stock it leaves behind.
+ * Symmetric with `quoteBuy`: restock first, then re-price, so the seller pays
+ * the same self-inflicted impact the buyer does.
+ */
+export function quoteSell(
+  planet: Planet,
+  commodity: Commodity,
+  listing: MarketListing,
+  qty: number,
+  day: number,
+): { unitPrice: number; proceeds: number; stock: number } {
+  const stock = Math.min(listing.stockMax, listing.stock + qty)
+  const unitPrice = marketPrice(planet, commodity, { ...listing, stock }, day)
+  return { unitPrice, proceeds: qty * unitPrice, stock }
 }
 
 export function buyCommodity(
@@ -118,21 +165,26 @@ export function buyCommodity(
   if (qty > space) return { state, error: `Not enough cargo space (${space} free).` }
   if (listing.stock < qty) return { state, error: 'Not enough stock on this market.' }
 
-  const cost = qty * listing.price
+  // Charge the settled price, not the sticker price: draining the stock is
+  // what moves the price, and the buyer caused that move. `sellCommodity`
+  // already worked this way, so this only removes the asymmetry.
+  const commodity = COMMODITY_MAP[commodityId]
+  const { unitPrice, cost, stock } = quoteBuy(planet, commodity, listing, qty, state.day)
   if (cost > state.credits) return { state, error: `Not enough credits (need ${cost}).` }
 
   const ownedBefore = state.cargo[commodityId]
   const ownedAfter = ownedBefore + qty
-  const basisBefore = state.costBasis[commodityId] ?? listing.price
+  const basisBefore = state.costBasis[commodityId] ?? unitPrice
   const costBasisAfter = (basisBefore * ownedBefore + cost) / ownedAfter
 
   const nextCargo = { ...state.cargo, [commodityId]: ownedAfter }
   const nextCostBasis = { ...state.costBasis, [commodityId]: costBasisAfter }
-  const nextMarket = { ...state.markets[state.planetId], [commodityId]: { ...listing, stock: listing.stock - qty } }
-  refreshPrice(nextMarket, state.planetId, commodityId, state.day)
   const nextMarkets = {
     ...state.markets,
-    [state.planetId]: nextMarket,
+    [state.planetId]: {
+      ...state.markets[state.planetId],
+      [commodityId]: { ...listing, stock, price: unitPrice },
+    },
   }
 
   return {
@@ -163,19 +215,21 @@ export function sellCommodity(
   const owned = state.cargo[commodityId]
   if (owned < qty) return { state, error: `You only have ${owned} ${COMMODITY_MAP[commodityId].name}.` }
 
-  const nextStock = Math.min(listing.stockMax, listing.stock + qty)
-  const nextMarket = {
-    ...state.markets[state.planetId],
-    [commodityId]: { ...listing, stock: nextStock },
-  }
-  refreshPrice(nextMarket, state.planetId, commodityId, state.day)
-  const sellPrice = nextMarket[commodityId].price
-  const proceeds = qty * sellPrice
+  const { unitPrice, proceeds, stock } = quoteSell(
+    planet,
+    COMMODITY_MAP[commodityId],
+    listing,
+    qty,
+    state.day,
+  )
   const basis = state.costBasis[commodityId] ?? listing.price
   const profit = proceeds - basis * qty
   const nextMarkets = {
     ...state.markets,
-    [state.planetId]: nextMarket,
+    [state.planetId]: {
+      ...state.markets[state.planetId],
+      [commodityId]: { ...listing, stock, price: unitPrice },
+    },
   }
 
   const remaining = owned - qty
@@ -210,10 +264,11 @@ export function advanceDay(state: GameState): GameState {
     const nextRecord = {} as Record<CommodityId, MarketListing>
     for (const commodityId of Object.keys(record) as CommodityId[]) {
       const listing = record[commodityId]
-      const base = listing.baseStock
-      const regen = Math.max(0, listing.stock + (base - listing.stock) * 0.2)
-      const stock = Math.max(0, Math.min(listing.stockMax, Math.round(regen)))
-      const nextListing: MarketListing = { ...listing, stock, prevPrice: listing.price }
+      const nextListing: MarketListing = {
+        ...listing,
+        stock: regenerateStock(listing.stock, listing.baseStock, listing.stockMax),
+        prevPrice: listing.price,
+      }
       nextRecord[commodityId] = nextListing
     }
     for (const commodityId of Object.keys(nextRecord) as CommodityId[]) {
@@ -222,6 +277,36 @@ export function advanceDay(state: GameState): GameState {
     nextMarkets[planetId] = nextRecord
   }
   return { ...state, day, markets: nextMarkets }
+}
+
+/**
+ * The listing as it will stand `days` ticks from now, with no player action.
+ *
+ * The per-day random factor is a pure hash of (planet, commodity, day), so a
+ * future price is fully determined - the intel panel can quote the market the
+ * player actually lands on rather than today's. Regenerates stock in exactly
+ * the order `advanceDay` does, so a projection can never drift from reality.
+ */
+export function projectListing(
+  planetId: string,
+  commodityId: CommodityId,
+  listing: MarketListing,
+  fromDay: number,
+  days: number,
+): MarketListing {
+  const planet = PLANET_MAP[planetId]
+  if (!planet) return listing
+  const commodity = COMMODITY_MAP[commodityId]
+  let current = listing
+  for (let i = 1; i <= days; i++) {
+    const next: MarketListing = {
+      ...current,
+      stock: regenerateStock(current.stock, current.baseStock, current.stockMax),
+      prevPrice: current.price,
+    }
+    current = { ...next, price: marketPrice(planet, commodity, next, fromDay + i) }
+  }
+  return current
 }
 
 export function cargoUsed(state: GameState): number {

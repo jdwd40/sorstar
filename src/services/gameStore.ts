@@ -66,15 +66,32 @@ export interface AuthStore {
   logout(): Promise<void>
 }
 
+/**
+ * Which identity could not be restored on session recovery.
+ *
+ * - `pilot`: the anonymous pilot is gone; its saved game is unreachable.
+ * - `account`: a registered account's session could not be resumed. The
+ *   account itself is untouched - only the browser's session was - so the
+ *   player can get back to it by signing in again.
+ */
+export type SessionLostReason = 'pilot' | 'account'
+
 export interface GameStore {
   load(): Promise<GameState | null>
   save(state: GameState): Promise<void>
+/**
+   * Wipes the current save - the local backup and, when signed in, the remote
+   * record - but leaves the account and pilot identity intact. It does NOT log
+   * out; use `auth.logout()` for that.
+   */
   clear(): Promise<void>
   /**
-   * Fired when the anonymous pilot identity is unrecoverable and a fresh pilot
-   * has been minted in its place (the old pilot's save is now out of reach).
+   * Fired when the active identity is unrecoverable and a fresh anonymous
+   * pilot has been minted in its place, so the game stays playable. The reason
+   * tells the UI whether this is unrecoverable progress loss (`pilot`) or a
+   * recoverable sign-in problem (`account`).
    */
-  onPilotLost?: () => void
+  onPilotLost?: (reason: SessionLostReason) => void
   /**
    * Fired when the underlying save changed outside this store instance (e.g.
    * another tab wrote the same local save / account). Consumers can reload.

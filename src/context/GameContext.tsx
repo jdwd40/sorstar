@@ -1,11 +1,11 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { CommodityId, GameState, ShipUpgradeType } from '../types/game'
-import { createGameStore, type AuthUser, type GameStore } from '../services/gameStore'
+import { createGameStore, type AuthUser, type GameStore, type SessionLostReason } from '../services/gameStore'
 import { advanceDay, buyCommodity, sellCommodity } from '../services/marketService'
 import { travel as travelService, type TravelResult } from '../services/travelService'
 import { buyUpgrade } from '../services/playerService'
 import { createNewGame, netWorth, withLog } from '../services/gameService'
-import { COMMODITY_MAP, GAME_TARGET_NET_WORTH, PLANET_MAP } from '../data/gameData'
+import { COMMODITY_MAP, GAME_TARGET_NET_WORTH, PLANET_MAP, dailyUpkeep } from '../data/gameData'
 
 export interface ActionResult {
   ok: boolean
@@ -18,7 +18,7 @@ interface GameContextValue {
   ready: boolean
   loadError: boolean
   persistError: boolean
-  pilotLost: boolean
+  pilotLost: SessionLostReason | null
   dismissPilotLost: () => void
   retryLoad: () => void
   authUser: AuthUser | null
@@ -45,7 +45,15 @@ function stampProgress(next: GameState): GameState {
   if (nw > stats.maxNetWorth) {
     stats = { ...stats, maxNetWorth: nw }
   }
-  if (nw >= GAME_TARGET_NET_WORTH && !stats.victory) {
+  // Net worth alone is not an achievement: a ship bought outright with
+  // starting credits clears the bar without ever trading. Require actual
+  // realised profit from sales on top of the headline number.
+  if (
+    nw >= GAME_TARGET_NET_WORTH &&
+    stats.goodsSold > 0 &&
+    stats.totalProfit > 0 &&
+    !stats.victory
+  ) {
     stats = { ...stats, victory: true, victorySeen: false, victoryDay: next.day }
   }
   if (stats === next.stats) return next
@@ -57,6 +65,12 @@ function logProfit(profit: number): string {
   return p >= 0 ? ` (+${p} cr profit)` : ` (${p} cr)`
 }
 
+/** " at Korbant Reach" for a state's current planet, or nothing if unknown. */
+function atPlanet(state: GameState): string {
+  const planet = PLANET_MAP[state.planetId]
+  return planet ? ` at ${planet.name}` : ''
+}
+
 export function GameProvider({ children }: { children: ReactNode }) {
   const [game, setGame] = useState<GameState | null>(null)
   const [ready, setReady] = useState(false)
@@ -64,7 +78,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
   const [loadError, setLoadError] = useState(false)
   const [persistError, setPersistError] = useState(false)
   const [authBusy, setAuthBusy] = useState(false)
-  const [pilotLost, setPilotLost] = useState(false)
+  const [pilotLost, setPilotLost] = useState<SessionLostReason | null>(null)
   const [externalChange, setExternalChange] = useState(0)
   const storeRef = useRef<GameStore | null>(null)
   if (storeRef.current === null) storeRef.current = createGameStore()
@@ -76,7 +90,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
   const loadTokenRef = useRef(0)
 
   useEffect(() => {
-    store.onPilotLost = () => setPilotLost(true)
+    store.onPilotLost = (reason) => setPilotLost(reason)
     store.onExternalChange = () => setExternalChange((n) => n + 1)
     return () => {
       store.onPilotLost = undefined
@@ -239,97 +253,136 @@ export function GameProvider({ children }: { children: ReactNode }) {
     commit({ ...gameRef.current, stats: { ...gameRef.current.stats, victorySeen: true } })
   }, [commit])
 
+/**
+ * The shared spine of every player action: guard against "no active game", run
+ * a pure service function, surface its error verbatim, then commit the result
+ * with a log line.
+ *
+ * Each action supplies only what makes it distinct - how it runs, what its log
+ * says, and what success reads like. Without this, the same six lines were
+ * copy-pasted across buy/sell/wait/travel/upgrade, and they had already drifted:
+ * the buy and sell logs were each deriving trade totals from a listed price
+ * instead of the credits that actually moved.
+ */
+const apply = useCallback(
+  <R extends { state: GameState; error?: string }>(
+    run: (state: GameState) => R,
+    log: (before: GameState, after: GameState, result: R) => { icon: string; text: string },
+    done: (after: GameState, result: R) => { message: string; info?: TravelResult },
+    precheck?: (state: GameState) => string | null,
+  ): ActionResult => {
+    const before = gameRef.current
+    if (!before) return { ok: false, message: 'No active game.' }
+    const blocked = precheck?.(before)
+    if (blocked) return { ok: false, message: blocked }
+    const result = run(before)
+    if (result.error) return { ok: false, message: result.error }
+    const { icon, text } = log(before, result.state, result)
+    commit(withLog(result.state, icon, text))
+    const { message, info } = done(result.state, result)
+    return info ? { ok: true, message, info } : { ok: true, message }
+  },
+  [commit],
+)
+
   const buy = useCallback(
-    (commodityId: CommodityId, qty: number): ActionResult => {
-      if (!gameRef.current) return { ok: false, message: 'No active game.' }
-      const result = buyCommodity(gameRef.current, commodityId, qty)
-      if (result.error) return { ok: false, message: result.error }
-      const stateBefore = gameRef.current
-      const commodity = COMMODITY_MAP[commodityId]
-      const planet = PLANET_MAP[result.state.planetId]
-      const pricePaid = stateBefore.markets[stateBefore.planetId][commodityId].price
-      commit(
-        withLog(
-          result.state,
-          '🛒',
-          `Bought ${qty}× ${commodity.name} for ${qty * pricePaid} cr${planet ? ` at ${planet.name}` : ''}.`,
-        ),
-      )
-      return { ok: true, message: 'Purchase complete.' }
-    },
-    [commit],
+    (commodityId: CommodityId, qty: number): ActionResult =>
+      apply(
+        (state) => buyCommodity(state, commodityId, qty),
+        (before, after) => ({
+          icon: '🛒',
+          // Sum from the credits that moved: buying shifts the market, so the
+          // pre-trade listed price is not what was paid.
+          text: `Bought ${qty}× ${COMMODITY_MAP[commodityId].name} for ${
+            before.credits - after.credits
+          } cr${atPlanet(after)}.`,
+        }),
+        () => ({ message: 'Purchase complete.' }),
+      ),
+    [apply],
   )
 
   const sell = useCallback(
-    (commodityId: CommodityId, qty: number): ActionResult => {
-      if (!gameRef.current) return { ok: false, message: 'No active game.' }
-      const result = sellCommodity(gameRef.current, commodityId, qty)
-      if (result.error) return { ok: false, message: result.error }
-      const commodity = COMMODITY_MAP[commodityId]
-      const stateBefore = gameRef.current
-      const priceNow = result.state.markets[result.state.planetId][commodityId].price
-      // same basis the store used to record the profit: pre-sale cost basis (the
-      // post-sale state may already have dropped it when the position was sold out)
-      const basis =
-        stateBefore.costBasis[commodityId] ??
-        stateBefore.markets[stateBefore.planetId][commodityId].price
-      const profit = (priceNow - basis) * qty
-      const planet = PLANET_MAP[result.state.planetId]
-      commit(
-        withLog(
-          result.state,
-          '💰',
-          `Sold ${qty}× ${commodity.name} for ${qty * priceNow} cr${planet ? ` at ${planet.name}` : ''}${logProfit(profit)}.`,
-        ),
-      )
-      return { ok: true, message: 'Sale complete.' }
-    },
-    [commit],
+    (commodityId: CommodityId, qty: number): ActionResult =>
+      apply(
+        (state) => sellCommodity(state, commodityId, qty),
+        (before, after) => {
+          // Same basis the store used to record the profit: pre-sale cost
+          // basis, since the post-sale state may have dropped it when the
+          // position sold out completely.
+          const basis =
+            before.costBasis[commodityId] ??
+            before.markets[before.planetId][commodityId].price
+          const earned = after.credits - before.credits
+          return {
+            icon: '💰',
+            text: `Sold ${qty}× ${COMMODITY_MAP[commodityId].name} for ${earned} cr${atPlanet(
+              after,
+            )}${logProfit(earned - basis * qty)}.`,
+          }
+        },
+        () => ({ message: 'Sale complete.' }),
+      ),
+    [apply],
   )
 
-  const waitDay = useCallback((): ActionResult => {
-    if (!gameRef.current) return { ok: false, message: 'No active game.' }
-    const state = gameRef.current
-    const planet = PLANET_MAP[state.planetId]
-    commit(withLog(advanceDay(state), '🌓', `A day passes at ${planet ? planet.name : 'orbit'}. Markets re-open.`))
-    return { ok: true, message: `Day ${state.day + 1} begins.` }
-  }, [commit])
+  const waitDay = useCallback(
+    (): ActionResult =>
+      apply(
+        (state) => {
+          // Charge what the ship can actually pay. Refusing the wait outright
+          // would brick a player who has run out of credits *and* cargo: they
+          // cannot pay upkeep, cannot sell anything, and cannot afford fuel.
+          // Paying a partial bill keeps waiting available and never goes
+          // negative; once they sell, the full rate resumes.
+          const charged = Math.min(dailyUpkeep(state.ship), state.credits)
+          return {
+            state: { ...advanceDay(state), credits: state.credits - charged },
+            charged,
+          }
+        },
+        (_before, after, r) => ({
+          icon: '🌓',
+          text: `A day passes${atPlanet(after)}. Markets re-open.${
+            r.charged > 0 ? ` Upkeep: -${r.charged} cr.` : ' Upkeep unpaid.'
+          }`,
+        }),
+        (after) => ({ message: `Day ${after.day} begins.` }),
+      ),
+    [apply],
+  )
 
   const travel = useCallback(
-    (destId: string): ActionResult => {
-      if (!gameRef.current) return { ok: false, message: 'No active game.' }
-      const result = travelService(gameRef.current, destId)
-      if (result.error) return { ok: false, message: result.error }
-      commit(
-        withLog(
-          result.state,
-          '🚀',
-          `Jumped ${result.distanceLy} ly from ${result.fromName} to ${result.toName} (${result.fuelCost} cr fuel, ${result.days} day${(result.days ?? 0) > 1 ? 's' : ''}).`,
-        ),
-      )
-      return { ok: true, message: `Arrived at ${result.toName}.`, info: result }
-    },
-    [commit],
+    (destId: string): ActionResult =>
+      apply(
+        (state) => travelService(state, destId),
+        (_before, _after, r) => ({
+          icon: '🚀',
+          text: `Jumped ${r.distanceLy} ly from ${r.fromName} to ${r.toName} (${r.fuelCost} cr fuel, ${
+            r.days ?? 0
+          } day${(r.days ?? 0) > 1 ? 's' : ''}).`,
+        }),
+        (_after, r) => ({ message: `Arrived at ${r.toName}.`, info: r }),
+      ),
+    [apply],
   )
 
   const travelUpgrade = useCallback(
-    (type: ShipUpgradeType): ActionResult => {
-      if (!gameRef.current) return { ok: false, message: 'No active game.' }
-      const result = buyUpgrade(gameRef.current, type)
-      if (result.error || !result.state) return { ok: false, message: result.error ?? 'Upgrade failed.' }
-      commit(
-        withLog(
-          result.state,
-          '🧰',
-          result.upgradeName ? `${result.upgradeName} installed.` : 'Ship upgraded.',
-        ),
-      )
-      return { ok: true, message: result.upgradeName ? `${result.upgradeName} installed.` : 'Upgrade complete.' }
-    },
-    [commit],
+    (type: ShipUpgradeType): ActionResult =>
+      apply(
+        (state) => buyUpgrade(state, type),
+        (_before, _after, r) => ({
+          icon: '🧰',
+          text: r.upgradeName ? `${r.upgradeName} installed.` : 'Ship upgraded.',
+        }),
+        (_after, r) => ({
+          message: r.upgradeName ? `${r.upgradeName} installed.` : 'Upgrade complete.',
+        }),
+      ),
+    [apply],
   )
 
-  const dismissPilotLost = useCallback(() => setPilotLost(false), [])
+  const dismissPilotLost = useCallback(() => setPilotLost(null), [])
 
   const value = useMemo<GameContextValue>(
     () => ({

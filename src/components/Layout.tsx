@@ -29,14 +29,21 @@ function SyncWarnings() {
           role="alert"
           className="bg-rose-950/95 border-b border-rose-700/50 text-rose-200 text-xs text-center py-1.5 px-3 flex items-center justify-center gap-3"
         >
+          {/* 'account' is recoverable - the save is intact, only the browser's
+              session was, so point at signing in again. */}
           <span>
-            Your previous pilot could not be restored — its saved game is out of
-            reach, so a fresh pilot was created.
+            {pilotLost === 'account'
+              ? 'Your saved session could not be restored, so a temporary pilot was used. Sign in again to pick up your account where you left off.'
+              : 'Your previous pilot could not be restored — its saved game is out of reach, so a fresh pilot was created.'}
           </span>
           <button
             onClick={dismissPilotLost}
             className="underline underline-offset-2 hover:text-white"
-            aria-label="Dismiss pilot warning"
+            aria-label={
+              pilotLost === 'account'
+                ? 'Dismiss account warning'
+                : 'Dismiss pilot warning'
+            }
           >
             Dismiss
           </button>

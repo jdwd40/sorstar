@@ -7,7 +7,7 @@ import { netWorth } from '../services/gameService'
 import { fmt, fmtMoney } from '../utils/format'
 
 export default function StartPage() {
-const { game, ready, loadError, retryLoad, startNewGame, resetGame } = useGame()
+  const { game, ready, loadError, retryLoad, startNewGame, resetGame } = useGame()
   const navigate = useNavigate()
   const [confirmReset, setConfirmReset] = useState(false)
   const hasSave = game !== null

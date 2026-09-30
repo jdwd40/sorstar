@@ -12,7 +12,7 @@ import {
 } from '../data/gameData'
 import { createMarkets } from './marketService'
 
-export function emptyCargo() {
+function emptyCargo() {
   return {
     food: 0,
     water: 0,
@@ -72,8 +72,29 @@ export function cargoValueAtPlanet(state: GameState): number {
   return total
 }
 
+/**
+ * What the hold is worth in equity terms: what you paid for it.
+ *
+ * Deliberately *not* the local market price. Marking cargo to the market made
+ * net worth swing on the player's own trading - draining a market to buy
+ * pushed the price up, which inflated the valuation of the very goods just
+ * purchased, so buying inflated net worth and selling deflated it. Priced at
+ * cost, net worth only moves when credits actually move, which is what the
+ * goal is meant to measure. `cargoValueAtPlanet` still reports the live
+ * figure, as information rather than as an achievement.
+ */
+export function cargoEquity(state: GameState): number {
+  let total = 0
+  for (const commodity of COMMODITIES) {
+    const qty = state.cargo[commodity.id]
+    if (qty <= 0) continue
+    total += qty * (state.costBasis[commodity.id] ?? commodity.basePrice)
+  }
+  return total
+}
+
 export function netWorth(state: GameState): number {
-  return state.credits + cargoValueAtPlanet(state) + state.stats.upgradesInvested
+  return state.credits + cargoEquity(state) + state.stats.upgradesInvested
 }
 
 export function goalProgress(state: GameState): number {

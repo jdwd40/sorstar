@@ -4,8 +4,9 @@ import {
   COMMODITIES,
   PLANET_TYPE_META,
   cargoCapacityAtLevel,
+  dailyUpkeep,
 } from '../data/gameData'
-import { cargoFree, cargoUsed, priceDirection } from '../services/marketService'
+import { cargoFree, cargoUsed, priceDirection, quoteBuy, quoteSell } from '../services/marketService'
 import { fmt, fmtMoney } from '../utils/format'
 import type { ActionResult } from '../context/GameContext'
 
@@ -48,22 +49,42 @@ export default function MarketPanel({ game, planet, buy, sell, waitDay }: Market
   const capacity = cargoCapacityAtLevel(game.ship.cargoLevel)
   const used = cargoUsed(game)
   const free = cargoFree(game)
+  const upkeep = dailyUpkeep(game.ship)
+  const canPayUpkeep = game.credits >= upkeep
   const meta = PLANET_TYPE_META[planet.type]
 
   const rows = useMemo(() => {
     return COMMODITIES.map((commodity) => {
-      const listing = game.markets[planet.id]?.[commodity.id]
       const owned = game.cargo[commodity.id]
       const inputStr = inputs[commodity.id] ?? '1'
       const parsedQty = Number(inputStr)
       const qty = Number.isFinite(parsedQty) && parsedQty > 0 ? Math.floor(parsedQty) : 0
 
-      const maxByCredits = listing ? Math.floor(game.credits / Math.max(1, listing.price)) : 0
+      const listing = game.markets[planet.id]?.[commodity.id]
+
+      // Quote through the same helpers the trade functions use, so the cost
+      // shown here is the cost charged. The buy price rises as stock is
+      // drained, so the affordable maximum needs a bisection, not a divide.
+      const maxByCredits = (() => {
+        if (!listing) return 0
+        let lo = 0
+        let hi = Math.floor(game.credits / Math.max(1, listing.price))
+        while (lo < hi) {
+          const mid = Math.ceil((lo + hi) / 2)
+          if (quoteBuy(planet, commodity, listing, mid, game.day).cost <= game.credits) lo = mid
+          else hi = mid - 1
+        }
+        return lo
+      })()
       const maxBuy = Math.max(0, Math.min(listing?.stock ?? 0, free, maxByCredits))
-      const buyCost = qty * (listing?.price ?? 0)
+
+      const buyQuote = listing
+        ? quoteBuy(planet, commodity, listing, qty, game.day)
+        : { unitPrice: 0, cost: 0 }
+      const buyCost = qty > 0 ? buyQuote.cost : 0
       const canBuy = qty > 0 && qty <= maxBuy
       const canSell = qty > 0 && qty <= owned
-      const sellValue = qty * (listing?.price ?? 0)
+      const sellValue = listing ? quoteSell(planet, commodity, listing, qty, game.day).proceeds : 0
 
       let buyTooltip = `Buy ${qty} for ${fmtMoney(buyCost)}`
       if (!canBuy) {
@@ -131,8 +152,19 @@ export default function MarketPanel({ game, planet, buy, sell, waitDay }: Market
               Population:{' '}
               <span className="text-white font-semibold">{planet.population.toLocaleString()}</span>
             </div>
-            <button onClick={waitDay} className="btn-ghost mt-2 text-xs">
+            <button
+              onClick={waitDay}
+              title={
+                canPayUpkeep
+                  ? undefined
+                  : `Only ${game.credits} cr on hand - upkeep will be paid down to that.`
+              }
+              className="btn-ghost mt-2 text-xs"
+            >
               Wait one day
+              <span className="ml-1 text-slate-400">
+                ({upkeep} cr upkeep{canPayUpkeep ? '' : ', partial'})
+              </span>
             </button>
           </div>
         </div>

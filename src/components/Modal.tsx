@@ -3,14 +3,15 @@ import { useEffect, useRef, type ReactNode } from 'react'
 interface ModalProps {
   onClose: () => void
   children: ReactNode
-  labelledBy?: string
-  className?: string
+  /** Id of the element naming this dialog. Required: an unnamed modal is
+   *  announced by screen readers as just "dialog". */
+  labelledBy: string
 }
 
 const FOCUSABLE =
   'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
 
-export default function Modal({ onClose, children, labelledBy, className }: ModalProps) {
+export default function Modal({ onClose, children, labelledBy }: ModalProps) {
   const dialogRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -67,7 +68,8 @@ export default function Modal({ onClose, children, labelledBy, className }: Moda
       <div
         ref={dialogRef}
         tabIndex={-1}
-className={`relative card p-6 w-full max-w-lg modal-pop max-h-[85vh] overflow-y-auto outline-none ${className ?? ''}`}
+        className="relative card p-6 w-full max-w-lg modal-pop max-h-[85vh] overflow-y-auto outline-none"
+
       >
         {children}
       </div>

@@ -13,10 +13,10 @@ export default function VictoryModal({
   onNewGame: () => void
 }) {
   return (
-    <Modal onClose={onContinue}>
+    <Modal onClose={onContinue} labelledBy="victory-title">
       <div className="text-center">
         <div className="text-6xl mb-2">🏆</div>
-        <h2 className="text-3xl font-black tracking-wide text-amber-300 text-glow mb-2">
+        <h2 id="victory-title" className="text-3xl font-black tracking-wide text-amber-300 text-glow mb-2">
           TRAILBLAZER
         </h2>
         <p className="text-slate-300 mb-1">

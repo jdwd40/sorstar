@@ -1,7 +1,7 @@
 import type { CommodityId, GameState } from '../types/game'
 import { COMMODITY_MAP, PLANETS, PLANET_MAP, cargoCapacityAtLevel } from '../data/gameData'
-import { stockFactor } from './marketService'
-import { travelCost } from './travelService'
+import { projectListing, quoteBuy, quoteSell } from './marketService'
+import { distanceBetween, travelCost } from './travelService'
 
 export interface TradeLead {
   commodityId: CommodityId
@@ -16,16 +16,22 @@ export interface TradeLead {
   holding: number
   runQty: number
   runProfit: number
+  travelDays: number
 }
 
 /**
  * Returns the best buy->sell opportunities visible from the player's
- * current planet, based on live market prices. Used to render market
- * intelligence once the Navigation Array upgrade is purchased.
+ * current planet. Used to render market intelligence once the Navigation
+ * Array upgrade is purchased.
  *
  * Each lead is sized to a realistic run: how much of the commodity you
-* could load right now (cargo space, local stock, credits left after that
+ * could load right now (cargo space, local stock, credits left after that
  * destination's fuel) and the net profit after the one-way fuel cost.
+ *
+ * Both ends of the run are quoted the way the trade will actually settle,
+ * not at the prices on screen right now. The destination re-prices once per
+ * day of travel, and each side moves against you the moment you trade - so
+ * quoting sticker prices promises profit the run cannot deliver.
  */
 export function getTradeLeads(state: GameState): TradeLead[] {
   const currentPlanet = PLANET_MAP[state.planetId]
@@ -41,34 +47,55 @@ export function getTradeLeads(state: GameState): TradeLead[] {
   const leads: TradeLead[] = []
 
   for (const commodity of Object.values(COMMODITY_MAP)) {
-    const buy = prices[commodity.id].price
-    if (buy <= 0) continue
+    const listing = prices[commodity.id]
+    if (!listing || listing.price <= 0) continue
+    if (listing.stock <= 0 || freeSpace <= 0) continue
 
-    const stock = prices[commodity.id].stock
-    if (stock <= 0 || freeSpace <= 0) continue
+    let best: {
+      planetId: string
+      buy: number
+      sell: number
+      profit: number
+      runQty: number
+      days: number
+    } | null = null
 
-    let best: { planetId: string; price: number; profit: number; runQty: number } | null = null
     for (const planet of PLANETS) {
       if (planet.id === state.planetId) continue
       const sellListing = state.markets[planet.id]?.[commodity.id]
       if (!sellListing) continue
+
+      const days = distanceBetween(currentPlanet, planet)
       const travel = travelCost(state, planet.id)
-      // The run must actually be executable: after spending credits on cargo,
-      // the leftover still has to cover fuel for THIS destination. Sizing the
-      // load against the target's fuel keeps the panel from quoting a profit
-      // that Travel then blocks with "not enough credits for fuel".
-      const runQty = Math.min(freeSpace, stock, Math.max(0, Math.floor((state.credits - travel) / buy)))
+      // The run has to be executable: after paying for the cargo, the
+      // remaining credits still have to cover the fuel for THIS destination.
+      const budget = state.credits - travel
+      const cap = Math.min(freeSpace, listing.stock)
+
+      // The buy price rises with every unit drained from the origin, so the
+      // largest affordable load is found by bisection rather than a single
+      // divide - the price is a function of the quantity.
+      let lo = 0
+      let hi = cap
+      while (lo < hi) {
+        const mid = Math.ceil((lo + hi) / 2)
+        if (quoteBuy(currentPlanet, commodity, listing, mid, state.day).cost <= budget) lo = mid
+        else hi = mid - 1
+      }
+      const runQty = lo
       if (runQty <= 0) continue
-      // Selling `runQty` into the target market raises its stock and drops the
-      // price (marketService applies the same feedback), so quote the profit at
-      // the *impacted* sell price - not the pre-sale sticker price.
-      const stockAfter = Math.min(sellListing.stockMax, sellListing.stock + runQty)
-      const impactRatio =
-        stockFactor(stockAfter, sellListing.baseStock) / stockFactor(sellListing.stock, sellListing.baseStock)
-      const sellPriceAfter = Math.max(1, Math.round(sellListing.price * impactRatio))
-      const net = (sellPriceAfter - buy) * runQty - travel
+
+      const buy = quoteBuy(currentPlanet, commodity, listing, runQty, state.day).unitPrice
+      // The destination re-prices once per day of travel, so quote the market
+      // as it will actually stand on arrival - then apply the impact of
+      // dumping the load into it, since `sellCommodity` prices the same way.
+      const arrivalDay = state.day + days
+      const onArrival = projectListing(planet.id, commodity.id, sellListing, state.day, days)
+      const sell = quoteSell(planet, commodity, onArrival, runQty, arrivalDay).unitPrice
+
+      const net = (sell - buy) * runQty - travel
       if (net > 0 && (!best || net > best.profit)) {
-        best = { planetId: planet.id, price: sellListing.price, profit: net, runQty }
+        best = { planetId: planet.id, buy, sell, profit: net, runQty, days }
       }
     }
 
@@ -78,14 +105,15 @@ export function getTradeLeads(state: GameState): TradeLead[] {
         commodityName: commodity.name,
         icon: commodity.icon,
         originPlanetName: currentPlanet.name,
-        originPrice: buy,
+        originPrice: best.buy,
         targetPlanetId: best.planetId,
         targetPlanetName: PLANET_MAP[best.planetId].name,
-        targetPrice: best.price,
-        spread: best.price - buy,
+        targetPrice: best.sell,
+        spread: best.sell - best.buy,
         holding: state.cargo[commodity.id] ?? 0,
-runQty: best.runQty,
+        runQty: best.runQty,
         runProfit: best.profit,
+        travelDays: best.days,
       })
     }
   }

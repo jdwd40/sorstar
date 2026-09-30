@@ -3,6 +3,7 @@ import type {
   CommodityId,
   Planet,
   PlanetType,
+  Ship,
   ShipUpgradeType,
 } from '../types/game'
 
@@ -12,6 +13,12 @@ export const STARTING_CREDITS = 1200
 export const STARTING_PLANET = 'eden'
 export const SAVE_KEY = 'sorstar.save.v2'
 export const LOG_LIMIT = 80
+
+// See `dailyUpkeep`. Kept as named constants so the balance is tunable in one
+// place and the verify script can assert the cap.
+export const UPKEEP_BASE = 1
+export const UPKEEP_NAV_MULTIPLIER = 2
+export const UPKEEP_MAX = 13
 
 export const COMMODITIES: Commodity[] = [
   {
@@ -295,6 +302,23 @@ export function cargoCapacityAtLevel(level: number): number {
 export function fuelCostAtLevel(level: number): number {
   const tier = ENGINE_UPGRADES.find((t) => t.level === level)
   return tier ? tier.fuelPerLy : ENGINE_UPGRADES[0].fuelPerLy
+}
+
+/**
+ * Daily berth and crew upkeep, charged when the player deliberately waits a day.
+ *
+ * Upgrades stay a trade-off rather than a pure upgrade: each cargo bay, engine
+ * tier, and nav array costs more to keep than it returns, so waiting gets
+ * progressively more expensive as the ship grows. Only manual waiting is
+ * charged - jumping already prices the journey through fuel, and charging
+ * upkeep on top of that would tax trading twice for the same days.
+ *
+ * Capped so a fully upgraded hull can never cost more than a round trip is
+ * worth, which keeps a late-game idle loop from being ruinous by accident.
+ */
+export function dailyUpkeep(ship: Ship): number {
+  const raw = UPKEEP_BASE + ship.cargoLevel + ship.engineLevel + ship.navLevel * UPKEEP_NAV_MULTIPLIER
+  return Math.min(UPKEEP_MAX, Math.max(UPKEEP_BASE, raw))
 }
 
 export const STARTING_SHIP = {

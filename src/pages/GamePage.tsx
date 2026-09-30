@@ -167,7 +167,14 @@ export default function GamePage() {
             <div className="flex items-center gap-2">
               <span className="text-sm text-slate-400">Net Worth</span>
               <span className="font-semibold text-indigo-300">{fmtMoney(nw)}</span>
-              <span className="text-xs text-slate-500">(cargo {fmtMoney(cargoValue)})</span>
+              {/* Net worth counts cargo at cost, so this market figure is
+                  informational only and is labelled to say so. */}
+              <span
+                className="text-xs text-slate-500"
+                title="What your hold would fetch if you sold it all here right now. Not counted in net worth."
+              >
+                (hold worth {fmtMoney(cargoValue)} here)
+              </span>
             </div>
           </div>
 
