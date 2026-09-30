@@ -9,7 +9,7 @@ import { travel } from '../src/services/travelService'
 import { resumableIdentity } from '../src/services/pocketBaseStore'
 import { buyUpgrade } from '../src/services/playerService'
 import type { CommodityId, GameState } from '../src/types/game'
-import { PLANETS, STARTING_SHIP, UPKEEP_BASE, UPKEEP_MAX, dailyUpkeep } from '../src/data/gameData'
+import { COMMODITY_MAP, PLANETS, STARTING_SHIP, UPKEEP_BASE, UPKEEP_MAX, dailyUpkeep } from '../src/data/gameData'
 
 let failures = 0
 const check = (cond: boolean, label: string) => {
@@ -105,25 +105,112 @@ s5 = sellCommodity(s5, 'food', 10).state
 const nw1 = netWorth(s5)
 check(nw1 > nw0, 'net worth grows after profitable round trip')
 
-// 7. buying is charged the settled (post-impact) price, not the sticker price.
-//    Buyers used to pay the pre-drain price while sellers paid post-restock,
-//    which handed buyers a free ride past their own market impact.
+// 7. a trade fills by walking the book, and the listing keeps the resting
+//    price. Buyers used to pay the pre-drain price while sellers paid
+//    post-restock, which handed buyers a free ride past their own market impact.
 let s6 = createNewGame()
 s6 = { ...s6, credits: 500000, cargo: Object.fromEntries(Object.keys(s6.cargo).map((k) => [k, 0])), costBasis: {} }
 const listedPrice = s6.markets[s6.planetId].crystals.price
 const stockBeforeBuy = s6.markets[s6.planetId].crystals.stock
+const oneUnit = buyCommodity(s6, 'crystals', 1)
+check(
+  !oneUnit.error && s6.credits - oneUnit.state.credits === listedPrice,
+  `a 1-unit buy fills at exactly the displayed price (${listedPrice} cr)`,
+)
 const buy6 = buyCommodity(s6, 'crystals', 10)
 if (buy6.error) {
-  check(false, `buy charged settled price (unexpected error: ${buy6.error})`)
+  check(false, `buy walks the book (unexpected error: ${buy6.error})`)
 } else {
-  const settledPrice = buy6.state.markets[s6.planetId].crystals.price
-  const spent = s6.credits - buy6.state.credits
-  check(settledPrice > listedPrice, 'price rises after draining stock')
-  check(spent === 10 * settledPrice, `buy charged settled price (spent ${spent} = 10 x ${settledPrice})`)
+  const restingPrice = buy6.state.markets[s6.planetId].crystals.price
+  check(restingPrice > listedPrice, 'price rises after draining stock')
+  check(
+    buy6.state.markets[s6.planetId].crystals.price === restingPrice,
+    'listing keeps the resting price, not the average fill',
+  )
   check(
     buy6.state.markets[s6.planetId].crystals.stock === stockBeforeBuy - 10,
     'buy removes exactly the traded quantity from stock',
   )
+  // Impact accumulates across the order rather than landing only on its last
+  // unit, so ten units cost strictly more than ten times the opening price.
+  const spent = s6.credits - buy6.state.credits
+  check(
+    spent > listedPrice * 10,
+    `a bulk buy pays more than the sticker price (spent ${spent} vs ${listedPrice * 10})`,
+  )
+}
+
+// 7b. market impact cannot be dodged by splitting a trade into chunks. Pricing a
+//     trade at the post-trade price charged the impact once instead of per unit,
+//     so buying 100 food one unit at a time cost ~13% less than buying it in one
+//     go. Averaging the fill fixed the magnitude but not the exploit: credits are
+//     whole numbers, so rounding once per chunk made the total depend on how the
+//     order was chopped up - ~6% cheaper the other way on cheap goods, where one
+//     1 cr rounding step is a fifth of the price. Summing per-unit fills is
+//     neutral by construction, so bulk and chunked must agree exactly.
+/** A solvent player with a full hold, so tests exercise real order sizes. */
+const rich = () => {
+  const st = createNewGame()
+  return {
+    ...st,
+    credits: 500000,
+    ship: { ...st.ship, cargoLevel: 5 },
+    cargo: Object.fromEntries(Object.keys(st.cargo).map((k) => [k, 0])),
+    costBasis: {},
+  }
+}
+
+{
+  for (const qty of [40, 70, 100]) {
+    const bulk = buyCommodity(rich(), 'food', qty)
+    // Guard against a vacuous pass: an order that errored would leave both
+    // totals at zero and the comparison below would trivially hold.
+    check(!bulk.error && bulk.state.cargo.food === qty, `bulk buy of ${qty} food loads ${qty} units`)
+    if (bulk.error) continue
+    let chunked = rich()
+    let chunkErrors = 0
+    for (let i = 0; i < qty; i++) {
+      const step = buyCommodity(chunked, 'food', 1)
+      if (step.error) chunkErrors++
+      chunked = step.state
+    }
+    check(
+      chunkErrors === 0 && chunked.cargo.food === qty,
+      `chunked buy of ${qty} loads the same total with no errors`,
+    )
+    const bulkCost = rich().credits - bulk.state.credits
+    const chunkCost = rich().credits - chunked.credits
+    check(
+      bulkCost === chunkCost,
+      `buying ${qty} food in chunks costs exactly the same as in bulk (${bulkCost} vs ${chunkCost})`,
+    )
+  }
+
+  // The realistic sell case: buy a load first, so stock sits below its ceiling
+  // and restocking actually moves the price.
+  const load = buyCommodity(rich(), 'food', 100)
+  check(!load.error, 'sell setup: a full load succeeds')
+  if (!load.error) {
+    const m = load.state.markets[load.state.planetId].food
+    check(m.stock < m.stockMax, 'sell setup: stock sits below its ceiling after loading')
+    for (const qty of [50, 100]) {
+      const bulk = sellCommodity(load.state, 'food', qty)
+      check(!bulk.error, `bulk sell of ${qty} food succeeds`)
+      if (bulk.error) continue
+      let chunked = load.state
+      for (let i = 0; i < qty; i++) chunked = sellCommodity(chunked, 'food', 1).state
+      const bulkProceeds = bulk.state.credits - load.state.credits
+      const chunkProceeds = chunked.credits - load.state.credits
+      check(
+        chunked.cargo.food === load.state.cargo.food - qty,
+        `chunked sell of ${qty} sells the same total`,
+      )
+      check(
+        bulkProceeds === chunkProceeds,
+        `selling ${qty} food in chunks pays exactly the same as in bulk (${bulkProceeds} vs ${chunkProceeds})`,
+      )
+    }
+  }
 }
 
 // 8. buying can no longer inflate net worth. Cargo is marked to cost basis,
@@ -139,11 +226,49 @@ if (buy7.error) {
     Math.abs(netWorth(buy7.state) - nwBefore) < 1e-9,
     'buying does not inflate net worth',
   )
+  // A same-planet round trip is exactly neutral: the buy pays the going price
+  // as stock drains and selling straight back pays it as stock is restored, so
+  // the two walks retrace each other. Fair either way - no free money, no
+  // phantom penalty - so the invariant is "never profitable".
   const sell7 = sellCommodity(buy7.state, 'crystals', 10)
   check(
-    !sell7.error && netWorth(sell7.state) < nwBefore,
-    'round trip loses to market impact rather than printing money',
+    !sell7.error && netWorth(sell7.state) <= nwBefore + 1e-9,
+    'a same-planet round trip can never print money',
   )
+}
+
+// 8b. a same-day buy/sell round trip must be worth exactly nothing, forever.
+//     Charging a sale at the book *before* each unit joins stock, while a buy
+//     charges the book before each unit leaves, shifts the sale to {S-q..S-1}
+//     so it no longer retraces the buy's {S-q+1..S}. The pair then nets
+//     P(S-q) - P(S) per cycle with stock fully restored - free credits, on
+//     repeat, on the same day. Cheap to miss (it is a few credits a cycle) and
+//     fatal if it ships, so it is brute-forced here rather than spot-checked.
+{
+  let worst = 0
+  let worstCase = ''
+  for (const cid of Object.keys(COMMODITY_MAP) as CommodityId[]) {
+    for (const qty of [1, 5, 10, 50, 100]) {
+      const st = rich()
+      const nw0 = netWorth(st)
+      let cur = st
+      for (let i = 0; i < 30; i++) {
+        const bought = buyCommodity(cur, cid, qty)
+        if (bought.error) {
+          cur = bought.state
+          continue
+        }
+        const sold = sellCommodity(bought.state, cid, qty)
+        cur = sold.error ? bought.state : sold.state
+      }
+      const gain = netWorth(cur) - nw0
+      if (gain > worst) {
+        worst = gain
+        worstCase = `${cid} x${qty}`
+      }
+    }
+  }
+  check(worst <= 0, `30 same-day round trips never print money (worst ${worst.toFixed(4)} cr${worstCase ? ` from ${worstCase}` : ''})`)
 }
 
 // 9. waiting a day and re-buying cannot farm net worth. This was worth ~4k cr

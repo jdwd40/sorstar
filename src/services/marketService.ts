@@ -51,7 +51,23 @@ function regenerateStock(stock: number, baseStock: number, stockMax: number): nu
   return Math.max(0, Math.min(stockMax, Math.round(regen)))
 }
 
-function marketPrice(
+/**
+ * The continuous price curve, in whole-credit fractions.
+ *
+ * `marketPrice` rounds this to an integer, which is right for anything the
+ * player *reads* but wrong for anything the player *pays*: rounding turns the
+ * curve into a staircase, and on cheap goods a single 1 cr step is a fifth of
+ * the price. Trade fills are priced off this instead, so impact is a smooth
+ * quantity rather than a quantised one.
+ */
+/**
+ * Memoised market prices. A price depends only on (planet, commodity, day,
+ * stock), and the fill walks query long runs of adjacent stock levels on every
+ * quote, so this turns a per-render O(quantity) walk into a cache hit.
+ */
+const priceCache = new Map<string, number>()
+
+function rawPrice(
   planet: Planet,
   commodity: Commodity,
   listing: MarketListing,
@@ -59,7 +75,25 @@ function marketPrice(
 ): number {
   const factor =
     planet.priceMods[commodity.id] * stockFactor(listing.stock, listing.baseStock)
-  return Math.max(1, Math.round(commodity.basePrice * factor * randomFactor(planet.id, commodity.id, day)))
+  return commodity.basePrice * factor * randomFactor(planet.id, commodity.id, day)
+}
+
+function marketPrice(
+  planet: Planet,
+  commodity: Commodity,
+  listing: MarketListing,
+  day: number,
+): number {
+  const key = `${planet.id}|${commodity.id}|${day}|${listing.stock}`
+  const hit = priceCache.get(key)
+  if (hit !== undefined) return hit
+  const price = Math.max(1, Math.round(rawPrice(planet, commodity, listing, day)))
+  // Bounded so a long session cannot grow this without limit. Prices are a pure
+  // function of (planet, commodity, day, stock), so dropping entries is always
+  // safe - it only costs recomputation.
+  if (priceCache.size > 20000) priceCache.clear()
+  priceCache.set(key, price)
+  return price
 }
 
 function priceDelta(listing: MarketListing): number {
@@ -114,11 +148,83 @@ function refreshPrice(
 }
 
 /**
- * The unit price a buy of `qty` settles at, plus the stock it leaves behind.
+ * Walks a buy through the book one unit at a time: each unit fills at the
+ * price on the books *before* it is bought, and the market re-prices as the
+ * stock drains.
+ *
+ * Averaging the pre- and post-trade price instead looks equivalent and is not.
+ * Credits are whole numbers, so a total is rounded once - and rounding once per
+ * chunk makes the result depend on how the player chopped the order up. On
+ * cheap goods (water sits at 4-5 cr) a single 1 cr rounding step is a fifth of
+ * the price, so any endpoint-based fill left chunking worth several percent
+ * either way: ~13% cheaper before, and once the curve was made continuous,
+ * ~6% cheaper the other way. Summing per-unit fills is neutral *by
+ * construction* - a 100-unit order and a hundred 1-unit orders sum to exactly
+ * the same credits - and it keeps whole-number credits, which is the whole
+ * reason the naive version was attractive.
+ *
+ * The side effect is a good one: a 1-unit trade always fills at exactly the
+ * price on screen.
+ */
+function buyFill(
+  planet: Planet,
+  commodity: Commodity,
+  listing: MarketListing,
+  qty: number,
+  day: number,
+): { cost: number; price: number } {
+  let stock = listing.stock
+  let cost = 0
+  for (let k = 0; k < qty; k++) {
+    cost += marketPrice(planet, commodity, { ...listing, stock }, day)
+    stock = Math.max(0, stock - 1)
+  }
+  return { cost, price: marketPrice(planet, commodity, { ...listing, stock }, day) }
+}
+
+/**
+ * `quoteSell`'s counterpart: each unit fills at the price of the book *after*
+ * it joins the stock.
+ *
+ * The asymmetry with `buyFill` is load-bearing. A buy charges the book before
+ * each unit leaves ({S-q+1..S}); a sell charges the book after each unit
+ * arrives ({S-q+1..S} again, from the depleted side). Charging the sell
+ * *before* the addition instead shifts it to {S-q..S-1}, which no longer
+ * retraces the buy: the round trip then nets P(S-q) - P(S) with stock fully
+ * restored, which is free credits on repeat forever. Pairing them this way
+ * makes buying and selling back the exact mirror of each other.
+ *
+ * It also means a 1-unit sale realises slightly *less* than the sticker, which
+ * is the honest answer - you are moving the market you are quoting - while a
+ * 1-unit purchase still fills at exactly it.
+ */
+function sellFill(
+  planet: Planet,
+  commodity: Commodity,
+  listing: MarketListing,
+  qty: number,
+  day: number,
+): { proceeds: number; price: number } {
+  let stock = listing.stock
+  let proceeds = 0
+  for (let k = 0; k < qty; k++) {
+    stock = Math.min(listing.stockMax, stock + 1)
+    proceeds += marketPrice(planet, commodity, { ...listing, stock }, day)
+  }
+  return { proceeds, price: marketPrice(planet, commodity, { ...listing, stock }, day) }
+}
+
+/**
+ * The unit price a buy of `qty` settles at, plus the stock and resting price it
+ * leaves behind.
  *
  * The market panel, `buyCommodity`, and the intel panel all read the fill
  * price from here, so a quoted price can never disagree with the charge.
- * The returned `stock` is the value the caller must persist alongside it.
+ *
+ * `unitPrice` is the average the player pays per unit and is a fraction
+ * (displayed rounded); `price` is the market's new resting price, which the
+ * caller must persist. They are different values and conflating them is how a
+ * listing ends up mispriced after a trade.
  */
 export function quoteBuy(
   planet: Planet,
@@ -126,16 +232,22 @@ export function quoteBuy(
   listing: MarketListing,
   qty: number,
   day: number,
-): { unitPrice: number; cost: number; stock: number } {
-  const stock = Math.max(0, listing.stock - qty)
-  const unitPrice = marketPrice(planet, commodity, { ...listing, stock }, day)
-  return { unitPrice, cost: qty * unitPrice, stock }
+): { unitPrice: number; cost: number; price: number; stock: number } {
+  const units = Math.max(0, Math.floor(qty))
+  const { cost, price } = buyFill(planet, commodity, listing, units, day)
+  return {
+    unitPrice: units > 0 ? cost / units : marketPrice(planet, commodity, listing, day),
+    cost,
+    price,
+    stock: Math.max(0, listing.stock - units),
+  }
 }
 
 /**
- * The unit price a sale of `qty` settles at, plus the stock it leaves behind.
- * Symmetric with `quoteBuy`: restock first, then re-price, so the seller pays
- * the same self-inflicted impact the buyer does.
+ * The unit price a sale of `qty` settles at, plus the stock and resting price
+ * it leaves behind. Symmetric with `quoteBuy`: restock one unit at a time and
+ * take the going-down price, so the seller pays the same self-inflicted impact
+ * the buyer does.
  */
 export function quoteSell(
   planet: Planet,
@@ -143,10 +255,15 @@ export function quoteSell(
   listing: MarketListing,
   qty: number,
   day: number,
-): { unitPrice: number; proceeds: number; stock: number } {
-  const stock = Math.min(listing.stockMax, listing.stock + qty)
-  const unitPrice = marketPrice(planet, commodity, { ...listing, stock }, day)
-  return { unitPrice, proceeds: qty * unitPrice, stock }
+): { unitPrice: number; proceeds: number; price: number; stock: number } {
+  const units = Math.max(0, Math.floor(qty))
+  const { proceeds, price } = sellFill(planet, commodity, listing, units, day)
+  return {
+    unitPrice: units > 0 ? proceeds / units : marketPrice(planet, commodity, listing, day),
+    proceeds,
+    price,
+    stock: Math.min(listing.stockMax, listing.stock + units),
+  }
 }
 
 export function buyCommodity(
@@ -169,11 +286,13 @@ export function buyCommodity(
   // what moves the price, and the buyer caused that move. `sellCommodity`
   // already worked this way, so this only removes the asymmetry.
   const commodity = COMMODITY_MAP[commodityId]
-  const { unitPrice, cost, stock } = quoteBuy(planet, commodity, listing, qty, state.day)
+  const { unitPrice, cost, price, stock } = quoteBuy(planet, commodity, listing, qty, state.day)
   if (cost > state.credits) return { state, error: `Not enough credits (need ${cost}).` }
 
   const ownedBefore = state.cargo[commodityId]
   const ownedAfter = ownedBefore + qty
+  // A new position is based at what this trade actually paid per unit, which
+  // is the averaged fill rather than the resting price the trade leaves behind.
   const basisBefore = state.costBasis[commodityId] ?? unitPrice
   const costBasisAfter = (basisBefore * ownedBefore + cost) / ownedAfter
 
@@ -183,7 +302,7 @@ export function buyCommodity(
     ...state.markets,
     [state.planetId]: {
       ...state.markets[state.planetId],
-      [commodityId]: { ...listing, stock, price: unitPrice },
+      [commodityId]: { ...listing, stock, price },
     },
   }
 
@@ -215,7 +334,7 @@ export function sellCommodity(
   const owned = state.cargo[commodityId]
   if (owned < qty) return { state, error: `You only have ${owned} ${COMMODITY_MAP[commodityId].name}.` }
 
-  const { unitPrice, proceeds, stock } = quoteSell(
+  const { proceeds, price, stock } = quoteSell(
     planet,
     COMMODITY_MAP[commodityId],
     listing,
@@ -228,7 +347,7 @@ export function sellCommodity(
     ...state.markets,
     [state.planetId]: {
       ...state.markets[state.planetId],
-      [commodityId]: { ...listing, stock, price: unitPrice },
+      [commodityId]: { ...listing, stock, price },
     },
   }
 

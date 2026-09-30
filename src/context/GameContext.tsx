@@ -269,12 +269,9 @@ const apply = useCallback(
     run: (state: GameState) => R,
     log: (before: GameState, after: GameState, result: R) => { icon: string; text: string },
     done: (after: GameState, result: R) => { message: string; info?: TravelResult },
-    precheck?: (state: GameState) => string | null,
   ): ActionResult => {
     const before = gameRef.current
     if (!before) return { ok: false, message: 'No active game.' }
-    const blocked = precheck?.(before)
-    if (blocked) return { ok: false, message: blocked }
     const result = run(before)
     if (result.error) return { ok: false, message: result.error }
     const { icon, text } = log(before, result.state, result)

@@ -33,7 +33,22 @@ export interface TradeLead {
  * day of travel, and each side moves against you the moment you trade - so
  * quoting sticker prices promises profit the run cannot deliver.
  */
+/**
+ * Leads are pure in `state`, and quoting one walks the book across every
+ * commodity/planet pair, so cache by state identity: the panel re-renders far
+ * more often than the game commits a new state.
+ */
+const leadCache = new WeakMap<GameState, TradeLead[]>()
+
 export function getTradeLeads(state: GameState): TradeLead[] {
+  const cached = leadCache.get(state)
+  if (cached) return cached
+  const leads = computeTradeLeads(state)
+  leadCache.set(state, leads)
+  return leads
+}
+
+function computeTradeLeads(state: GameState): TradeLead[] {
   const currentPlanet = PLANET_MAP[state.planetId]
   if (!currentPlanet) return []
 
@@ -85,15 +100,21 @@ export function getTradeLeads(state: GameState): TradeLead[] {
       const runQty = lo
       if (runQty <= 0) continue
 
-      const buy = quoteBuy(currentPlanet, commodity, listing, runQty, state.day).unitPrice
+      const buyQuote = quoteBuy(currentPlanet, commodity, listing, runQty, state.day)
       // The destination re-prices once per day of travel, so quote the market
       // as it will actually stand on arrival - then apply the impact of
       // dumping the load into it, since `sellCommodity` prices the same way.
       const arrivalDay = state.day + days
       const onArrival = projectListing(planet.id, commodity.id, sellListing, state.day, days)
-      const sell = quoteSell(planet, commodity, onArrival, runQty, arrivalDay).unitPrice
+      const sellQuote = quoteSell(planet, commodity, onArrival, runQty, arrivalDay)
+      const buy = buyQuote.unitPrice
+      const sell = sellQuote.unitPrice
 
-      const net = (sell - buy) * runQty - travel
+      // Net is taken from the two whole-credit totals rather than from the
+      // average unit prices: multiplying the averages back out by `runQty`
+      // reintroduces float error (a quoted 252.99999999999994 against a
+      // realised 253), and the totals are what the run actually banks.
+      const net = sellQuote.proceeds - buyQuote.cost - travel
       if (net > 0 && (!best || net > best.profit)) {
         best = { planetId: planet.id, buy, sell, profit: net, runQty, days }
       }
