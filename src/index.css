@@ -13,6 +13,13 @@
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  /* Shared glass edges and highlights, so panels stay consistent without
+     repeating a dozen tailwind utilities on every card. */
+  --edge: rgba(148, 163, 184, 0.18);
+  --edge-bright: rgba(148, 163, 184, 0.34);
+  --sheen: rgba(255, 255, 255, 0.07);
+  --panel-top: rgba(30, 41, 59, 0.72);
+  --panel-bottom: rgba(10, 15, 28, 0.86);
 }
 
 html,
@@ -71,26 +78,96 @@ input[type='number'] {
 
 @layer components {
   .card {
-    @apply bg-slate-900/70 border border-slate-700/60 rounded-xl shadow-lg backdrop-blur-sm;
+    @apply rounded-xl backdrop-blur-sm;
+    border: 1px solid var(--edge);
+    background: linear-gradient(180deg, var(--panel-top) 0%, var(--panel-bottom) 100%);
+    box-shadow:
+      0 18px 40px -26px rgba(0, 0, 0, 0.9),
+      inset 0 1px 0 var(--sheen);
   }
+
+  /* A panel head: one line, spaced out, quiet until something happens in it. */
+  .panel-heading {
+    @apply text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400;
+  }
+
   .btn-primary {
     @apply bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-lg font-semibold transition-colors disabled:opacity-40 disabled:cursor-not-allowed;
+    box-shadow:
+      0 8px 18px -10px rgba(99, 102, 241, 0.9),
+      inset 0 1px 0 rgba(255, 255, 255, 0.18);
   }
   .btn-ghost {
     @apply bg-slate-700/60 hover:bg-slate-600/60 text-slate-100 px-4 py-2 rounded-lg font-semibold transition-colors disabled:opacity-40 disabled:cursor-not-allowed;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
   }
   .btn-danger {
     @apply bg-red-600/80 hover:bg-red-500 text-white px-4 py-2 rounded-lg font-semibold transition-colors;
   }
   .btn-success {
     @apply bg-emerald-600/90 hover:bg-emerald-500 text-white px-4 py-2 rounded-lg font-semibold transition-colors disabled:opacity-40 disabled:cursor-not-allowed;
+    box-shadow:
+      0 8px 18px -10px rgba(16, 185, 129, 0.9),
+      inset 0 1px 0 rgba(255, 255, 255, 0.18);
+  }
+  .btn-sm {
+    @apply px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors disabled:opacity-40 disabled:cursor-not-allowed;
   }
   .input-sm {
     @apply bg-slate-800 border border-slate-600 rounded-md px-2 py-1 text-sm text-white w-20 text-center;
   }
-  .text-glow {
-    text-shadow: 0 0 12px rgba(129, 140, 248, 0.5);
+
+  /* Compact readout for the HUD and for panel headers. */
+  .chip {
+    @apply inline-flex items-center gap-1.5 rounded-lg px-2 py-1 text-[11px] leading-none;
+    border: 1px solid var(--edge);
+    background: linear-gradient(180deg, rgba(51, 65, 85, 0.6), rgba(15, 23, 42, 0.72));
   }
+  .stat-tile {
+    @apply rounded-lg p-2.5 text-center;
+    border: 1px solid var(--edge);
+    background: linear-gradient(180deg, rgba(51, 65, 85, 0.45), rgba(15, 23, 42, 0.6));
+  }
+
+  /* Tables: one set of cell styles, so a numeric column lines up on every
+     screen without each table re-stating the same utilities. */
+  .table-wrap {
+    @apply overflow-x-auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .table-head {
+    @apply border-b border-slate-700/70 text-left;
+  }
+  .th {
+    @apply py-2 pr-3 text-[11px] font-semibold uppercase tracking-wider text-slate-400 whitespace-nowrap;
+  }
+  .td {
+    @apply py-2.5 pr-3 align-middle;
+  }
+  .row {
+    @apply border-b border-slate-800/60 transition-colors;
+  }
+  .row-hover {
+    @apply hover:bg-slate-800/40;
+  }
+
+  .num {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Thin meters: cargo fill, stock, contract progress, the goal bar. */
+  .meter {
+    @apply h-1.5 w-full overflow-hidden rounded-full;
+    background: rgba(15, 23, 42, 0.9);
+    box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.16);
+  }
+  .meter-fill {
+    @apply h-full rounded-full transition-all;
+  }
+}
+
+.text-glow {
+  text-shadow: 0 0 12px rgba(129, 140, 248, 0.5);
 }
 
 @keyframes twinkle {
@@ -118,6 +195,61 @@ input[type='number'] {
   to { opacity: 1; transform: translateY(0) scale(1); }
 }
 
+/* One shot: in, hold, out - so a trade toast never has to be torn down. */
+@keyframes transaction-cycle {
+  0% { opacity: 0; transform: translateY(10px) scale(0.97); }
+  10% { opacity: 1; transform: translateY(0) scale(1); }
+  80% { opacity: 1; transform: translateY(0) scale(1); }
+  100% { opacity: 0; transform: translateY(-12px) scale(0.98); }
+}
+
+@keyframes pulse-glow {
+  0%, 100% { opacity: 0.35; transform: scale(0.9); }
+  50% { opacity: 0.9; transform: scale(1.08); }
+}
+
+@keyframes route-shimmer {
+  from { stroke-dashoffset: 0; }
+  to { stroke-dashoffset: -24; }
+}
+
+/* The ship marker over the current world: a slow breath in place. */
+@keyframes ship-bob {
+  0%, 100% { transform: translate(-50%, 0); }
+  50% { transform: translate(-50%, -3px); }
+}
+
+@keyframes radar-sweep {
+  from { transform: translate(-50%, -50%) rotate(0deg); }
+  to { transform: translate(-50%, -50%) rotate(360deg); }
+}
+
+@keyframes event-pulse {
+  0%, 100% { box-shadow: 0 0 6px -2px rgba(251, 191, 36, 0.6); }
+  50% { box-shadow: 0 0 14px 1px rgba(251, 191, 36, 0.85); }
+}
+
+@keyframes ready-glow {
+  0%, 100% { box-shadow: 0 0 0 1px rgba(52, 211, 153, 0.35), 0 0 18px -8px rgba(52, 211, 153, 0.7); }
+  50% { box-shadow: 0 0 0 1px rgba(52, 211, 153, 0.6), 0 0 28px -6px rgba(52, 211, 153, 0.95); }
+}
+
+@keyframes credit-float {
+  0% { opacity: 0; transform: translateY(2px); }
+  15% { opacity: 1; }
+  100% { opacity: 0; transform: translateY(-16px); }
+}
+
+@keyframes price-flash-up {
+  0% { background-color: rgba(52, 211, 153, 0.28); }
+  100% { background-color: transparent; }
+}
+
+@keyframes price-flash-down {
+  0% { background-color: rgba(248, 113, 113, 0.28); }
+  100% { background-color: transparent; }
+}
+
 @keyframes warp-stretch {
   0% { transform: scaleX(1) scaleY(1); opacity: 0; }
   15% { opacity: 1; }
@@ -141,6 +273,87 @@ input[type='number'] {
   animation: toast-in 0.25s cubic-bezier(0.2, 0.9, 0.3, 1.2);
 }
 
+.transaction-in {
+  animation: transaction-cycle 2.8s cubic-bezier(0.2, 0.9, 0.3, 1) forwards;
+}
+
+.pulse-glow {
+  animation: pulse-glow 2.6s ease-in-out infinite;
+}
+
+.ship-marker {
+  left: 50%;
+  transform: translateX(-50%);
+  animation: ship-bob 2.8s ease-in-out infinite;
+}
+
+.price-flash-up {
+  animation: price-flash-up 0.9s ease-out;
+}
+
+.price-flash-down {
+  animation: price-flash-down 0.9s ease-out;
+}
+
+/* Sector chart: a sweeping arm centred on the ship, faded out with a mask
+   rather than a filter so it costs nothing to composite. Positioned by its
+   centre (left/top set inline), so the rotation has to carry the centring. */
+.radar-sweep {
+  position: absolute;
+  width: 160%;
+  aspect-ratio: 1;
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+  background: conic-gradient(
+    from 0deg,
+    rgba(129, 140, 248, 0) 0deg,
+    rgba(129, 140, 248, 0) 300deg,
+    rgba(129, 140, 248, 0.06) 344deg,
+    rgba(129, 140, 248, 0.18) 360deg
+  );
+  -webkit-mask-image: radial-gradient(circle, #000 4%, rgba(0, 0, 0, 0.35) 24%, transparent 46%);
+  mask-image: radial-gradient(circle, #000 4%, rgba(0, 0, 0, 0.35) 24%, transparent 46%);
+  animation: radar-sweep 14s linear infinite;
+}
+
+.sector-chart {
+  background:
+    radial-gradient(ellipse at 50% 40%, rgba(30, 41, 59, 0.9) 0%, rgba(9, 13, 24, 0.98) 70%),
+    #090d18;
+  box-shadow:
+    inset 0 0 40px -10px rgba(99, 102, 241, 0.35),
+    0 0 0 1px rgba(2, 6, 23, 0.6);
+}
+
+/* A coarse and a fine grid, under a vignette that keeps the edges quiet. */
+.sector-grid {
+  background-image:
+    radial-gradient(circle at 50% 50%, transparent 50%, rgba(9, 13, 24, 0.9) 100%),
+    linear-gradient(rgba(148, 163, 184, 0.1) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(148, 163, 184, 0.1) 1px, transparent 1px),
+    linear-gradient(rgba(148, 163, 184, 0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(148, 163, 184, 0.045) 1px, transparent 1px);
+  background-size: 100% 100%, 25% 25%, 25% 25%, 6.25% 6.25%, 6.25% 6.25%;
+}
+
+.route-shimmer {
+  animation: route-shimmer 1.1s linear infinite;
+}
+
+/* Something is happening here right now: a market flag, a ready delivery. */
+.event-pulse {
+  animation: event-pulse 2.2s ease-in-out infinite;
+}
+
+.ready-glow {
+  animation: ready-glow 2.4s ease-in-out infinite;
+}
+
+/* The HUD's credit change, drifting up off the chip. */
+.credit-float {
+  animation: credit-float 1.6s ease-out forwards;
+}
+
 /* warp jump overlay streaks + flash */
 .warp-field {
   background:
@@ -153,4 +366,29 @@ input[type='number'] {
 
 .warp-flash {
   animation: warp-flash 0.6s ease-out forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+  /* The receipt's own animation ends on opacity 0, so with the duration cut it
+     would be invisible for its whole life. Cancel it instead and let the timer
+     take it away. */
+  .transaction-in {
+    animation: none;
+    opacity: 1;
+  }
+  /* Effects that are pure movement read as a flicker once the motion is gone. */
+  .radar-sweep,
+  .credit-float,
+  .warp-field,
+  .warp-streak,
+  .warp-flash {
+    display: none;
+  }
 }

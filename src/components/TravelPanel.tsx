@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { GameState, Planet } from '../types/game'
-import { PLANET_MAP, PLANETS, PLANET_TYPE_META, distanceBetween, fuelCostAtLevel } from '../data/gameData'
+import { PLANET_MAP, PLANETS, distanceBetween, fuelCostAtLevel } from '../data/gameData'
 import { canTravel, travelCost } from '../services/travelService'
 import { getTradeLeads } from '../services/intelService'
 import {
@@ -10,11 +10,16 @@ import {
   sectorEvents,
 } from '../services/marketEventService'
 import { contractDests } from '../services/contractService'
-import { fmtMoney } from '../utils/format'
+import { fmt, fmtMoney } from '../utils/format'
 import { sound } from '../utils/sound'
 import Modal from './Modal'
 import type { ActionResult } from '../context/GameContext'
 import type { TravelResult } from '../services/travelService'
+import SectorMap, { type SectorRoute } from './ui/SectorMap'
+import PlanetVisual from './ui/PlanetVisual'
+import GameBadge from './ui/GameBadge'
+import { StatTile } from './ui/StatusChip'
+import { IconBlocked, IconPlanetType, IconTravel, IconWarning } from './ui/Icons'
 
 interface TravelPanelProps {
   game: GameState
@@ -39,7 +44,7 @@ export default function TravelPanel({ game, travel, onArrival }: TravelPanelProp
   const [jumpTo, setJumpTo] = useState<Planet | null>(null)
   const [mapError, setMapError] = useState<string | null>(null)
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-const warpTimersRef = useRef<ReturnType<typeof setTimeout>[]>([])
+  const warpTimersRef = useRef<ReturnType<typeof setTimeout>[]>([])
 
   useEffect(() => {
     return () => {
@@ -56,6 +61,20 @@ const warpTimersRef = useRef<ReturnType<typeof setTimeout>[]>([])
       return { planet, cost, ly, check }
     })
   }, [game, current])
+
+  /**
+   * What the chart needs for every world, including this one: the distance and
+   * the fuel, and why a hop is closed if it is. All of it is already public -
+   * the table below says exactly the same things.
+   */
+  const routes = useMemo(() => {
+    const map = new Map<string, SectorRoute>()
+    map.set(current.id, { ly: 0, cost: 0, blocked: null })
+    for (const { planet, cost, ly, check } of destinations) {
+      map.set(planet.id, { ly, cost, blocked: check.ok ? null : (check.reason ?? null) })
+    }
+    return map
+  }, [destinations, current])
 
   const intel = useMemo(() => {
     if (game.ship.navLevel < 1) return []
@@ -80,10 +99,6 @@ const warpTimersRef = useRef<ReturnType<typeof setTimeout>[]>([])
   // Navigation Array gates. A destination the player is already carrying work
   // for is a reason to fly there that no upgrade should hide.
   const dueHere = useMemo(() => contractDests(game), [game])
-  const farthestLy = useMemo(
-    () => Math.max(...PLANETS.map((p) => distanceBetween(current, p))),
-    [current],
-  )
 
   const requestTravel = (planet: Planet) => {
     if (phase !== 'idle') return
@@ -105,7 +120,7 @@ const warpTimersRef = useRef<ReturnType<typeof setTimeout>[]>([])
     setJumpTo(dest)
     setPhase('charging')
     sound.travel()
-warpTimersRef.current.forEach(clearTimeout)
+    warpTimersRef.current.forEach(clearTimeout)
     warpTimersRef.current = [
       window.setTimeout(() => setPhase('jumping'), 450),
       window.setTimeout(() => {
@@ -125,144 +140,101 @@ warpTimersRef.current.forEach(clearTimeout)
     ]
   }
 
-  const mapX = (x: number) => `${x}%`
-  const mapY = (y: number) => `${y}%`
-
   return (
-    <div className="space-y-6">
-      <div className="card p-5">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-semibold text-indigo-300">
-            Travel <span className="text-slate-400 font-normal">· from {current.name}</span>
+    <div className="space-y-4">
+      <section className="card p-4 sm:p-5">
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+          <h2 className="panel-heading text-indigo-300/90">
+            Travel
+            <span className="ml-2 normal-case tracking-normal text-slate-400">
+              from {current.name}
+            </span>
           </h2>
-          <div className="text-sm text-slate-300">
-            Engine efficiency:{' '}
-            <span className="text-white font-semibold">{fuelPerLy} cr / ly</span>
-          </div>
+          <span className="text-[11px] text-slate-500">
+            Engine <span className="num text-slate-300">{fuelPerLy}</span> cr / ly
+          </span>
         </div>
 
-        <div className="relative w-full h-72 rounded-lg bg-slate-900/50 border border-slate-700/50 overflow-hidden mb-6">
-          <div className="absolute inset-0 opacity-30">
-            {Array.from({ length: 40 }).map((_, i) => (
-              <div
-                key={i}
-                className="absolute w-0.5 h-0.5 rounded-full bg-white"
-                style={{
-                  left: `${(i * 37) % 100}%`,
-                  top: `${(i * 53) % 100}%`,
-                  opacity: 0.3 + ((i * 7) % 70) / 100,
-                }}
-              />
-            ))}
-          </div>
-          {PLANETS.map((planet) => {
-            const isCurrent = planet.id === game.planetId
-            const meta = PLANET_TYPE_META[planet.type]
-            const hasEvent = eventPlanets.has(planet.id)
-            const due = dueHere.get(planet.id) ?? 0
-            return (
-              <div
-                key={planet.id}
-                role="button"
-                tabIndex={isCurrent ? -1 : 0}
-                aria-label={
-                  due > 0
-                    ? `${planet.name}${isCurrent ? ', current location' : ''}, ${due} contract${due > 1 ? 's' : ''} due here`
-                    : hasEvent
-                      ? `${planet.name}${isCurrent ? ', current location' : ''}, market alert`
-                      : isCurrent
-                        ? `${planet.name}, current location`
-                        : `Travel to ${planet.name}`
-                }
-                className={`absolute -translate-x-1/2 -translate-y-1/2 flex flex-col items-center group ${
-                  isCurrent ? 'z-20' : 'z-10 cursor-pointer'
-                }`}
-                style={{ left: mapX(planet.position.x), top: mapY(planet.position.y) }}
-                onClick={() => {
-                  if (!isCurrent) requestTravel(planet)
-                }}
-                onKeyDown={(e) => {
-                  if (!isCurrent && (e.key === 'Enter' || e.key === ' ')) {
-                    e.preventDefault()
-                    requestTravel(planet)
-                  }
-                }}
-              >
-                <div
-                  className={`w-3 h-3 rounded-full ${isCurrent ? 'bg-indigo-400 ring-4 ring-indigo-400/30' : 'bg-slate-300 group-hover:bg-indigo-300'} transition-colors`}
-                />
-                <span
-                  className={`text-[10px] mt-1 px-1.5 py-0.5 rounded ${isCurrent ? 'bg-indigo-500/60 text-white' : 'bg-slate-800/80 text-slate-300 group-hover:text-white'} whitespace-nowrap`}
-                >
-                  {hasEvent && <span className="text-amber-400">⚠ </span>}
-                  {due > 0 && (
-                    <span className="text-emerald-400" title="Contract due here">
-                      📜{due > 1 ? due : ''}{' '}
-                    </span>
-                  )}
-                  {meta.icon} {planet.name}
-                </span>
-              </div>
-            )
-          })}
-          <div className="absolute bottom-2 right-3 text-[10px] text-slate-500">
-            sector scale: max distance ~{farthestLy} ly
-          </div>
-        </div>
+        <SectorMap
+          current={current}
+          routes={routes}
+          eventPlanets={eventPlanets}
+          dueHere={dueHere}
+          busy={phase !== 'idle'}
+          onSelect={requestTravel}
+        />
 
         {mapError && (
-          <div className="mb-4 p-3 rounded-lg bg-red-900/40 border border-red-700/50 text-red-200 text-sm toast-in">
+          <div
+            className="toast-in mt-3 flex items-center gap-2 rounded-lg border border-rose-700/50 bg-rose-950/60 p-3 text-sm text-rose-200"
+            role="alert"
+          >
+            <IconBlocked className="h-4 w-4 shrink-0" />
             {mapError}
           </div>
         )}
 
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
+        <div className="table-wrap mt-4 -mx-4 px-4 sm:mx-0 sm:px-0">
+          <table className="w-full text-sm sm:min-w-[34rem]">
             <thead>
-              <tr className="text-left text-slate-400 border-b border-slate-700">
-                <th className="py-2 pr-4">Destination</th>
-                <th className="py-2 pr-4 text-right">Type</th>
-                <th className="py-2 pr-4 text-right">Distance</th>
-                <th className="py-2 pr-4 text-right">Fuel Cost</th>
-                <th className="py-2 text-right">Action</th>
+              <tr className="table-head">
+                <th className="th">Destination</th>
+                <th className="th text-right">
+                  <span className="sm:hidden">Dist</span>
+                  <span className="hidden sm:inline">Distance</span>
+                </th>
+                <th className="th text-right">
+                  Fuel<span className="hidden sm:inline"> cost</span>
+                </th>
+                <th className="th text-right">
+                  <span className="sr-only sm:not-sr-only">Action</span>
+                </th>
               </tr>
             </thead>
             <tbody>
               {destinations.map(({ planet, cost, ly, check }) => {
-                const meta = PLANET_TYPE_META[planet.type]
                 const due = dueHere.get(planet.id) ?? 0
                 return (
-                  <tr key={planet.id} className="border-b border-slate-800/60 hover:bg-slate-800/30">
-                    <td className="py-3 pr-4">
-                      <div className="text-white font-medium">
-                        {eventPlanets.has(planet.id) && (
-                          <span className="text-amber-400" title="Market event running here">
-                            ⚠{' '}
-                          </span>
-                        )}
-                        {planet.name}
-                        {due > 0 && (
-                          <span
-                            className="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 align-middle"
-                            title={`${due} contract${due > 1 ? 's' : ''} to deliver here`}
-                          >
-                            📜 {due} due
-                          </span>
-                        )}
+                  <tr key={planet.id} className="row row-hover">
+                    <td className="td">
+                      <div className="flex items-center gap-2">
+                        <PlanetVisual planet={planet} size="sm" className="m-0.5" />
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <span className="font-medium text-white">{planet.name}</span>
+                            <span className="hidden items-center gap-1 text-[10px] uppercase tracking-wide text-slate-500 sm:flex">
+                              <IconPlanetType type={planet.type} className="h-3 w-3" />
+                              {planet.type}
+                            </span>
+                            {eventPlanets.has(planet.id) && (
+                              <GameBadge tone="warn" title="A market event is running here">
+                                <IconWarning className="h-3 w-3" />
+                                event
+                              </GameBadge>
+                            )}
+                            {due > 0 && (
+                              <GameBadge
+                                tone="contract"
+                                title={`${due} contract${due > 1 ? 's' : ''} to deliver here`}
+                              >
+                                {due} due
+                              </GameBadge>
+                            )}
+                          </div>
+                          <div className="hidden max-w-[20rem] truncate text-xs text-slate-500 sm:block">
+                            {planet.description}
+                          </div>
+                        </div>
                       </div>
-                      <div className="text-xs text-slate-500 line-clamp-1">{planet.description}</div>
                     </td>
-                    <td className="py-3 pr-4 text-right">
-                      <span className="text-slate-300 text-xs">{meta.icon} {planet.type}</span>
-                    </td>
-                    <td className="py-3 pr-4 text-right text-slate-300">{ly} ly</td>
-                    <td className="py-3 pr-4 text-right font-semibold text-white">{fmtMoney(cost)}</td>
-                    <td className="py-3 text-right">
+                    <td className="td num whitespace-nowrap text-right text-slate-300">{fmt(ly)} ly</td>
+                    <td className="td num whitespace-nowrap text-right font-semibold text-white">{fmtMoney(cost)}</td>
+                    <td className="td text-right">
                       <button
                         onClick={() => requestTravel(planet)}
                         disabled={!check.ok || phase !== 'idle'}
                         title={check.reason}
-                        className="btn-primary px-3 py-1.5 text-xs"
+                        className="btn-primary btn-sm"
                       >
                         Travel
                       </button>
@@ -273,15 +245,13 @@ warpTimersRef.current.forEach(clearTimeout)
             </tbody>
           </table>
         </div>
-      </div>
+      </section>
 
-      <div className="card p-5">
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="text-lg font-semibold text-indigo-300">
-            🛰️ Market Intelligence
-          </h3>
+      <section className="card p-4 sm:p-5">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <h3 className="panel-heading text-indigo-300/90">Market intelligence</h3>
           {!intelEnabled && (
-            <span className="text-xs text-slate-500">
+            <span className="text-[11px] text-slate-500">
               Install the Navigation Array (Ship tab) to unlock trade leads.
             </span>
           )}
@@ -299,19 +269,21 @@ warpTimersRef.current.forEach(clearTimeout)
                 it deliberately says nothing about which good or by how much. */}
             {sectorAlerts.length > 0 && (
               <div>
-                <h4 className="text-xs uppercase tracking-wider text-amber-300 mb-2">
-                  Sector Market Alerts
-                </h4>
-                <div className="space-y-1">
+                <h4 className="panel-heading mb-2 text-amber-300/90">Sector market alerts</h4>
+                <div className="space-y-1.5">
                   {sectorAlerts.map((event) => {
                     const days = eventDaysRemaining(event, game.day)
                     return (
-                      <div key={event.id} className="flex items-center justify-between text-sm gap-3">
+                      <div
+                        key={event.id}
+                        className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 rounded-lg border border-amber-400/20 bg-amber-500/5 px-3 py-2 text-sm"
+                      >
                         <span className="text-white">
-                          {PLANET_MAP[event.planetId]?.name ?? event.planetId} —{' '}
+                          {PLANET_MAP[event.planetId]?.name ?? event.planetId}
+                          <span className="mx-1.5 text-slate-600">—</span>
                           {eventDefinition(event)?.name ?? event.eventType}
                         </span>
-                        <span className="text-slate-300 whitespace-nowrap">
+                        <span className="num whitespace-nowrap text-slate-300">
                           {describeEventMoves(event)}
                           <span className="text-slate-500">
                             {' '}
@@ -331,59 +303,66 @@ warpTimersRef.current.forEach(clearTimeout)
                 market or wait a day for prices to shift.
               </p>
             ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
+              <div className="table-wrap -mx-4 px-4 sm:mx-0 sm:px-0">
+                <table className="w-full min-w-[34rem] text-sm">
                   <thead>
-                    <tr className="text-left text-slate-400 border-b border-slate-700">
-                      <th className="py-2 pr-4">Good</th>
-                      <th className="py-2 pr-4">Buy Here</th>
+                    <tr className="table-head">
+                      <th className="th">Good</th>
+                      <th className="th">Buy here</th>
                       <th
-                        className="py-2 pr-4"
+                        className="th"
                         title="A forecast range, not a quote. The destination re-prices while you are in transit and you cannot see where it opens."
                       >
-                        Sell At (est.)
+                        Sell at (est.)
                       </th>
-                      <th className="py-2 pr-4 text-right">Spread</th>
-                      <th className="py-2 text-right">Expected</th>
+                      <th className="th text-right">Spread</th>
+                      <th className="th text-right">Expected</th>
                     </tr>
                   </thead>
                   <tbody>
                     {intel.map((lead) => (
-                      <tr key={lead.commodityId} className="border-b border-slate-800/60">
-                        <td className="py-2 pr-4">
+                      <tr key={lead.commodityId} className="row row-hover">
+                        <td className="td">
                           <span className="font-medium text-white">
-                            {lead.icon} {lead.commodityName}
+                            <span aria-hidden="true">{lead.icon}</span> {lead.commodityName}
                           </span>
                           {lead.holding > 0 && (
-                            <span className="ml-2 text-xs text-cyan-300">holding {lead.holding}</span>
+                            <span className="num ml-2 text-xs text-cyan-300">
+                              holding {fmt(lead.holding)}
+                            </span>
                           )}
                         </td>
-                        <td className="py-2 pr-4 text-emerald-400">
-                          {lead.originPlanetName} · {fmtMoney(lead.originPrice)}
+                        <td className="td text-emerald-300">
+                          {lead.originPlanetName}
+                          <div className="num text-xs text-slate-400">
+                            {fmtMoney(lead.originPrice)}
+                          </div>
                         </td>
-                        <td className="py-2 pr-4 text-amber-300">
-                          {lead.targetPlanetName} · {fmtMoney(lead.sellPriceLow)}–
-                          {fmtMoney(lead.sellPriceHigh)}
+                        <td className="td text-amber-300">
+                          {lead.targetPlanetName}
+                          <div className="num text-xs text-slate-400">
+                            {fmtMoney(lead.sellPriceLow)}–{fmtMoney(lead.sellPriceHigh)}
+                          </div>
                         </td>
-                        <td className="py-2 pr-4 text-right text-white font-semibold">
+                        <td className="td num text-right font-semibold text-white">
                           +{fmtMoney(lead.spread)}
                         </td>
-                        <td className="py-2 text-right">
+                        <td className="td text-right">
                           <span
-                            className="font-semibold text-emerald-400"
+                            className="num font-semibold text-emerald-300"
                             title="Expected profit: the arrival price is a forecast, so this is a fair average over where the market could open."
                           >
                             +{fmtMoney(lead.runProfit)}
                           </span>
-                          <div className="text-[10px] text-slate-500">
-                            expected · load {lead.runQty} units · arrives in {lead.travelDays} day
+                          <div className="num text-[10px] text-slate-500">
+                            load {fmt(lead.runQty)} · arrives in {lead.travelDays} day
                             {lead.travelDays > 1 ? 's' : ''}
                           </div>
                           {/* The downside is stated, not buried: a lead can still
                               land in the red if the market opens against you. */}
                           <div
-                            className={`text-[10px] ${
-                              lead.worstCase < 0 ? 'text-rose-400/80' : 'text-slate-500'
+                            className={`num text-[10px] ${
+                              lead.worstCase < 0 ? 'text-rose-300/80' : 'text-slate-500'
                             }`}
                           >
                             worst case {fmtMoney(lead.worstCase)}
@@ -397,45 +376,42 @@ warpTimersRef.current.forEach(clearTimeout)
             )}
           </div>
         )}
-      </div>
+      </section>
 
       {confirmDest && (
         <Modal onClose={() => setConfirmDest(null)} labelledBy="confirm-jump-title">
-          <div className="flex items-center gap-3 mb-4">
-            <span className="text-4xl">{confirmDest.icon}</span>
+          <div className="mb-4 flex items-center gap-3">
+            <PlanetVisual planet={confirmDest} size="lg" label={confirmDest.name} />
             <div>
-              <h2 id="confirm-jump-title" className="text-2xl font-bold text-white">
+              <h2 id="confirm-jump-title" className="text-xl font-bold text-white">
                 Plot course to {confirmDest.name}?
               </h2>
               <p className="text-sm text-slate-400">{confirmDest.description}</p>
             </div>
           </div>
-          <div className="grid grid-cols-3 gap-3 mb-5">
-            <div className="bg-slate-800/50 rounded-lg p-3 text-center">
-              <div className="text-xs uppercase tracking-wider text-slate-400">Distance</div>
-              <div className="text-lg font-bold text-white">
-                {distanceBetween(current, confirmDest)} ly
-              </div>
-            </div>
-            <div className="bg-slate-800/50 rounded-lg p-3 text-center">
-              <div className="text-xs uppercase tracking-wider text-slate-400">Fuel Cost</div>
-              <div className="text-lg font-bold text-amber-300">
-                {fmtMoney(travelCost(game, confirmDest.id))}
-              </div>
-            </div>
-            <div className="bg-slate-800/50 rounded-lg p-3 text-center">
-              <div className="text-xs uppercase tracking-wider text-slate-400">Travel Time</div>
-              <div className="text-lg font-bold text-white">
-                {distanceBetween(current, confirmDest)} day{distanceBetween(current, confirmDest) > 1 ? 's' : ''}
-              </div>
-            </div>
+          <div className="mb-5 grid grid-cols-3 gap-2">
+            <StatTile
+              label="Distance"
+              value={`${fmt(distanceBetween(current, confirmDest))} ly`}
+            />
+            <StatTile
+              label="Fuel"
+              value={fmtMoney(travelCost(game, confirmDest.id))}
+              tone="text-amber-200"
+            />
+            <StatTile
+              label="Jump time"
+              value={`${fmt(distanceBetween(current, confirmDest))} d`}
+              hint="one day per light year"
+            />
           </div>
           <div className="flex gap-3">
             <button onClick={() => setConfirmDest(null)} className="btn-ghost flex-1">
               Cancel
             </button>
-            <button onClick={executeTravel} className="btn-primary flex-1">
-              Launch 🚀
+            <button onClick={executeTravel} className="btn-primary flex flex-1 items-center justify-center gap-2">
+              <IconTravel className="h-4 w-4" />
+              Launch
             </button>
           </div>
         </Modal>
@@ -445,11 +421,11 @@ warpTimersRef.current.forEach(clearTimeout)
         <div className="fixed inset-0 z-50 flex items-center justify-center overflow-hidden">
           <div className="absolute inset-0 bg-indigo-950/90 modal-fade" />
           <div className="absolute inset-0 warp-field" />
-          <div className="absolute w-full h-px top-1/2 warp-flash bg-indigo-300 shadow-[0_0_30px_8px_rgba(129,140,248,0.8)]" />
+          <div className="absolute top-1/2 h-px w-full warp-flash bg-indigo-300 shadow-[0_0_30px_8px_rgba(129,140,248,0.8)]" />
           {Array.from({ length: 14 }).map((_, i) => (
             <div
               key={i}
-              className="absolute w-0.5 h-16 warp-streak bg-indigo-200"
+              className="absolute h-16 w-0.5 warp-streak bg-indigo-200"
               style={{
                 left: `${6 + i * 7}%`,
                 top: `${20 + ((i * 41) % 55)}%`,
@@ -459,17 +435,21 @@ warpTimersRef.current.forEach(clearTimeout)
             />
           ))}
           <div className="relative text-center text-white">
-            <div className="text-5xl mb-3">{jumpTo.icon}</div>
+            <PlanetVisual
+              planet={jumpTo}
+              size="2xl"
+              highlight={phase === 'jumping' ? 'selected' : null}
+              className="mx-auto mb-4"
+            />
             <div className="text-2xl font-bold tracking-widest text-indigo-100 text-glow">
               {phase === 'charging' ? 'Charging jump drive…' : `Warp to ${jumpTo.name}`}
             </div>
-            <div className="text-sm text-indigo-300 mt-1">
-              {distanceBetween(current, jumpTo)} ly · {fmtMoney(travelCost(game, jumpTo.id))} fuel
+            <div className="num mt-1 text-sm text-indigo-300">
+              {fmt(distanceBetween(current, jumpTo))} ly · {fmtMoney(travelCost(game, jumpTo.id))} fuel
             </div>
           </div>
         </div>
       )}
-
     </div>
   )
 }
