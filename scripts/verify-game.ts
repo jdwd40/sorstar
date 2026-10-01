@@ -2,15 +2,34 @@
  * Manual game-logic verification script.
  * Run with: npx tsx scripts/verify-game.ts
  */
-import { createNewGame, netWorth } from '../src/services/gameService'
-import { advanceDay, buyCommodity, quoteBuy, quoteSell, sellCommodity } from '../src/services/marketService'
+import { carriedGoods, createNewGame, netWorth } from '../src/services/gameService'
+import {
+  advanceDay,
+  buyCommodity,
+  quoteBuy,
+  priceDirection,
+  quoteSell,
+  saleValue,
+  sellCommodity,
+} from '../src/services/marketService'
 import { getTradeLeads } from '../src/services/intelService'
 import { travel } from '../src/services/travelService'
 import { resumableIdentity } from '../src/services/pocketBaseStore'
 import { migrate } from '../src/services/migrate'
-import { buyUpgrade } from '../src/services/playerService'
+import { buyUpgrade, describeUpgrade } from '../src/services/playerService'
 import type { Cargo, CommodityId, GameState } from '../src/types/game'
-import { COMMODITY_MAP, PLANETS, PLANET_MAP, STARTING_SHIP, UPKEEP_BASE, UPKEEP_MAX, dailyUpkeep } from '../src/data/gameData'
+import {
+  COMMODITY_MAP,
+  GAME_VERSION,
+  PLANETS,
+  PLANET_MAP,
+  STARTING_SHIP,
+  UPKEEP_BASE,
+  UPKEEP_MAX,
+  cargoCapacityAtLevel,
+  dailyUpkeep,
+  fuelCostAtLevel,
+} from '../src/data/gameData'
 
 let failures = 0
 /** Every commodity at zero, for handing a test a clean hold. */
@@ -279,6 +298,43 @@ if (buy7.error) {
   check(worst <= 0, `30 same-day round trips never print money (worst ${worst.toFixed(4)} cr${worstCase ? ` from ${worstCase}` : ''})`)
 }
 
+// 8c. every surface that quotes a sale quotes the settlement, not the sticker.
+//     The Trade tab reads the quote, but so do the Ship tab's hold table and
+//     the arrival report, and all three used to reach for `qty * listing.price`.
+//     A resting price is the price of the *next* unit, so valuing a load by it
+//     ignores the impact of the load itself and overstated a full hold by more
+//     than 10% - "your cargo is worth 900 cr" followed by a sale that paid 786.
+//     One helper (`saleValue`) now backs all of them, and it has to agree with
+//     the credits that actually move.
+{
+  const held = buyCommodity(rich(), 'food', 100).state
+  const listed = held.markets[held.planetId].food.price * 100
+  const quote = saleValue(held, 'food', 100)
+  const sold = sellCommodity(held, 'food', 100)
+  check(!sold.error, 'sell setup: a full hold sells')
+  if (!sold.error) {
+    check(
+      quote === sold.state.credits - held.credits,
+      `a quoted sale pays exactly what the sale credits (${quote} vs ${sold.state.credits - held.credits})`,
+    )
+    check(
+      quote < listed,
+      `the settled figure accounts for market impact the sticker price does not (${quote} < ${listed})`,
+    )
+    const good = carriedGoods(held).find((g) => g.commodity.id === 'food')
+    check(
+      !!good && good.sellsFor === quote,
+      'the hold table values a line at its settled sale value',
+    )
+  }
+  // And a quote the player cannot actually take must not promise money.
+  check(saleValue(held, 'food', 0) === 0, 'a zero-unit sale is worth nothing')
+  check(
+    saleValue(held, 'food', 101) > saleValue(held, 'food', 100),
+    'a larger sale is worth more, at a worse average',
+  )
+}
+
 // 9. waiting a day and re-buying cannot farm net worth. This was worth ~4k cr
 //    over 40 iterations when cargo was marked to the live local price.
 let s8 = createNewGame()
@@ -408,7 +464,6 @@ check(
 )
 
 // 12. waiting charges exactly one day of upkeep and advances the clock.
-//     Mirrors GameContext.waitDay: advance the day, then bill upkeep.
 let s10 = createNewGame()
 s10 = { ...s10, credits: 5000 }
 // Mirrors GameContext.waitDay: advance the day, then bill upkeep clamped to
@@ -549,19 +604,159 @@ check(
 
 const statsFixed = migrate(asSave({ stats: {} as never }))
 check(
-  ['totalProfit', 'goodsBought', 'goodsSold', 'tripsMade', 'upgradesInvested', 'maxNetWorth'].every(
+  ['tradingProfit', 'goodsBought', 'goodsSold', 'tripsMade', 'upgradesInvested', 'maxNetWorth'].every(
     (k) => statsFixed.stats[k as keyof GameState['stats']] === 0,
   ),
   'missing stats default to zero rather than poisoning every later total',
 )
 check(
-  throwsWith({ stats: { ...createNewGame().stats, totalProfit: NaN } }, 'stats.totalProfit'),
+  throwsWith({ stats: { ...createNewGame().stats, tradingProfit: NaN } }, 'stats.tradingProfit'),
   'a NaN cumulative total is reported instead of silently defeating the victory gate',
 )
 check(
   throwsWith({ costBasis: 'oops' }, 'costBasis must be an object'),
   'a structurally impossible costBasis is reported',
 )
+
+// The market panel draws its day-over-day arrow from `prevPrice`. A listing
+// that lost it renders "NaN%" beside a perfectly good price, which is the one
+// thing on that row a player cannot do anything about.
+{
+  const noPrev = createNewGame()
+  const { price, stock, stockMax, baseStock } = noPrev.markets[noPrev.planetId].food
+  const record = noPrev.markets[noPrev.planetId]
+  const state = {
+    ...noPrev,
+    markets: {
+      ...noPrev.markets,
+      [noPrev.planetId]: { ...record, food: { price, stock, stockMax, baseStock } },
+    },
+  } as unknown as GameState
+  const fixedPrev = migrate(state)
+  const repairedFood = fixedPrev.markets[fixedPrev.planetId].food
+  check(
+    repairedFood.prevPrice === repairedFood.price && Number.isFinite(repairedFood.prevPrice),
+    'a listing missing prevPrice is repaired rather than rendering NaN%',
+  )
+  check(
+    priceDirection(repairedFood) === 'flat',
+    'a repaired listing reads as unchanged rather than as a NaN move',
+  )
+}
+
+// 16. Upgrade messaging. A cargo tier that grew the hold from 12 to 20 units
+//     announced "(+20 units)": the player was told 20 units were added when 8
+//     were. The total and the increment are different claims and both are
+//     stated now, and every tier is checked so a future tier cannot regress.
+{
+  let up = { ...createNewGame(), credits: 1_000_000 }
+  for (const type of ['cargo', 'engine', 'nav'] as const) {
+    const before = up.ship
+    const res = buyUpgrade(up, type)
+    if (res.error || !res.applied) {
+      check(false, `upgrade ${type} applied (unexpected error: ${res.error})`)
+      continue
+    }
+    const line = describeUpgrade(res)
+    if (type === 'cargo') {
+      const from = cargoCapacityAtLevel(before.cargoLevel)
+      const to = cargoCapacityAtLevel(res.state.ship.cargoLevel)
+      check(
+        res.upgradeDetail === `${to} units (+${to - from})`,
+        `cargo Lv${res.state.ship.cargoLevel} reports "${to} units (+${to - from})" (got ${JSON.stringify(res.upgradeDetail)})`,
+      )
+      check(
+        !/\(\+\d+ units\)$/.test(line) || line.includes(`(${to - from})`),
+        `the cargo log line states the increment, not the total: ${line}`,
+      )
+      check(
+        !line.includes(`(+${to} units)`),
+        `the cargo log line never claims the new total as the addition (${line})`,
+      )
+    }
+    if (type === 'engine') {
+      check(
+        res.upgradeDetail ===
+          `${fuelCostAtLevel(res.state.ship.engineLevel)} cr/ly (was ${fuelCostAtLevel(before.engineLevel)})`,
+        `engine reports the tier it came down from (got ${JSON.stringify(res.upgradeDetail)})`,
+      )
+    }
+    if (type === 'nav') {
+      check(
+        res.upgradeName === `Navigation Array Lv${res.state.ship.navLevel}`,
+        `nav reports its level like the other tiers (got ${JSON.stringify(res.upgradeName)})`,
+      )
+    }
+    // The upgrade spend has to be recorded exactly once.
+    check(
+      res.state.stats.upgradesInvested > up.stats.upgradesInvested &&
+        res.state.stats.upgradesInvested === up.stats.upgradesInvested + (res.state.credits !== up.credits ? up.credits - res.state.credits : 0),
+      `upgrade spend is recorded once (${up.stats.upgradesInvested} -> ${res.state.stats.upgradesInvested})`,
+    )
+    up = res.state
+  }
+}
+
+// 17. `tradingProfit` is trading profit and nothing else. It used to be called
+//     `totalProfit` and shown as "Lifetime profit", which read as money made -
+//     while silently excluding fuel, upkeep and upgrade spend. The accounting
+//     was always right; the name and the labels were the lie.
+{
+  // A default hold, so there is a cargo tier left to buy and the upgrade can
+  // actually be afforded.
+  let econ = buyCommodity({ ...createNewGame(), credits: 500_000 }, 'food', 10).state
+  check(econ.stats.tradingProfit === 0, 'buying books no profit')
+  econ = travel(econ, 'drax').state
+  check(econ.stats.tradingProfit === 0, 'travelling books no profit')
+  const withUpgrade = buyUpgrade(econ, 'cargo')
+  check(
+    withUpgrade.applied === true && withUpgrade.state.stats.tradingProfit === 0,
+    `spending credits on an upgrade books no profit (${withUpgrade.error ?? 'applied'})`,
+  )
+  econ = advanceDay(withUpgrade.state)
+  check(econ.stats.tradingProfit === 0, 'waiting a day books no profit')
+  const soldEcon = sellCommodity(econ, 'food', 10)
+  check(!soldEcon.error, 'the run can be sold')
+  if (!soldEcon.error) {
+    const booked = soldEcon.state.stats.tradingProfit
+    const cash = soldEcon.state.credits - econ.credits
+    check(booked !== 0, 'a sale books trading profit')
+    // Proceeds minus the cost basis of what was sold, and nothing else: the
+    // fuel and upkeep already paid came out of `credits`, not out of this.
+    const basis = econ.costBasis.food ?? 0
+    check(
+      Math.abs(booked - (cash - basis * 10)) < 1e-6,
+      `trading profit is proceeds less cost basis, with no other costs folded in (${booked} vs ${cash - basis * 10})`,
+    )
+  }
+  // A loss is a loss: the stat is not floored at zero, or a player who dumps a
+  // bad load would read "no loss" from the summary.
+  const dumped = sellCommodity(
+    { ...createNewGame(), credits: 0, cargo: { ...emptyCargo(), crystals: 5 }, costBasis: { crystals: 5_000 } },
+    'crystals',
+    5,
+  )
+  check(!dumped.error && dumped.state.stats.tradingProfit < 0, 'a loss is recorded as a negative, not clamped')
+}
+
+// 18. A v2 save carries `totalProfit` forward as `tradingProfit`. The number is
+//     unchanged; only its name - and what the UI may honestly call it - is not.
+{
+  const legacy = asSave({
+    version: 2,
+    stats: { ...createNewGame().stats, tradingProfit: undefined, totalProfit: 4321 },
+  })
+  const carried = migrate(legacy)
+  check(
+    carried.stats.tradingProfit === 4321 && !('totalProfit' in carried.stats),
+    'a v2 save migrates totalProfit to tradingProfit and drops the old key',
+  )
+  check(carried.version === GAME_VERSION, `the migrated save is stamped v${GAME_VERSION} (got v${carried.version})`)
+  check(
+    throwsWith({ version: 2, stats: { ...createNewGame().stats, totalProfit: NaN } }, 'stats.totalProfit'),
+    'an unreadable legacy total is reported, not quietly zeroed',
+  )
+}
 
 // Quantity guards. NaN fails every `qty <= 0` and `cost > credits` comparison,
 // so before the fix it sailed straight through and wrote NaN into cargo and

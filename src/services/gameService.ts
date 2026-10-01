@@ -10,7 +10,7 @@ import {
   STARTING_SHIP,
   PLANET_MAP,
 } from '../data/gameData'
-import { createMarkets } from './marketService'
+import { createMarkets, cargoBasisAt, saleValue } from './marketService'
 
 function emptyCargo() {
   return {
@@ -45,7 +45,7 @@ export function createNewGame(version = GAME_VERSION): GameState {
     costBasis: {},
     markets: createMarkets(PLANETS.map((p) => p.id), day),
     stats: {
-      totalProfit: 0,
+      tradingProfit: 0,
       goodsBought: 0,
       goodsSold: 0,
       tripsMade: 0,
@@ -61,13 +61,19 @@ export function createNewGame(version = GAME_VERSION): GameState {
   return withLog(starter, '📡', `You dock at ${planetName} with ${STARTING_CREDITS} cr and a fresh hold.`)
 }
 
-export function cargoValueAtPlanet(state: GameState): number {
+/**
+ * What the whole hold would fetch if it were dumped on this market now.
+ *
+ * `saleValue` per line rather than `qty * listing.price`, so this is a figure a
+ * sale can actually be held to. It is information only - net worth marks cargo
+ * at cost - and the header says so wherever it is shown.
+ */
+export function cargoSaleValue(state: GameState): number {
   let total = 0
   for (const commodity of COMMODITIES) {
     const qty = state.cargo[commodity.id]
     if (qty <= 0) continue
-    const price = state.markets[state.planetId]?.[commodity.id]?.price ?? commodity.basePrice
-    total += qty * price
+    total += saleValue(state, commodity.id, qty)
   }
   return total
 }
@@ -80,15 +86,15 @@ export function cargoValueAtPlanet(state: GameState): number {
  * pushed the price up, which inflated the valuation of the very goods just
  * purchased, so buying inflated net worth and selling deflated it. Priced at
  * cost, net worth only moves when credits actually move, which is what the
- * goal is meant to measure. `cargoValueAtPlanet` still reports the live
- * figure, as information rather than as an achievement.
+ * goal is meant to measure. `saleValue` still reports the live figure, as
+ * information rather than as an achievement.
  */
 export function cargoEquity(state: GameState): number {
   let total = 0
   for (const commodity of COMMODITIES) {
     const qty = state.cargo[commodity.id]
     if (qty <= 0) continue
-    total += qty * (state.costBasis[commodity.id] ?? commodity.basePrice)
+    total += qty * cargoBasisAt(state, commodity.id)
   }
   return total
 }
@@ -104,28 +110,39 @@ export function goalProgress(state: GameState): number {
 export interface CarriedGood {
   commodity: Commodity
   qty: number
+  /** What the player paid per unit. */
   costBasis: number
+  /** The listed price per unit at this market. */
   herePrice: number
-  realized: number
+  /**
+   * What selling the whole line would credit, to the credit.
+   *
+   * Not `qty * herePrice`: a resting price is the price of the next unit, so
+   * it ignores the impact of the line being dumped into the market. On a full
+   * hold that overstates the figure by double digits. `saleValue` walks the
+   * book exactly as the sale would, so this is the money, not an estimate.
+   */
+  sellsFor: number
+  /** `qty * costBasis` - the credits already sunk into the line. */
   breakEven: number
 }
 
-/** Values currently carried in the hold, priced at the local market. */
+/** Values currently carried in the hold, at what it would fetch right here. */
 export function carriedGoods(state: GameState): CarriedGood[] {
   const result: CarriedGood[] = []
   for (const commodity of COMMODITIES) {
     const qty = state.cargo[commodity.id]
     if (qty <= 0) continue
     const herePrice = state.markets[state.planetId]?.[commodity.id]?.price ?? commodity.basePrice
-    const costBasis = state.costBasis[commodity.id] ?? herePrice
+    const costBasis = cargoBasisAt(state, commodity.id)
     result.push({
       commodity,
       qty,
       costBasis,
       herePrice,
-      realized: qty * herePrice,
+      sellsFor: saleValue(state, commodity.id, qty),
       breakEven: qty * costBasis,
     })
   }
-  return result.sort((a, b) => b.realized - a.realized)
+  return result.sort((a, b) => b.sellsFor - a.sellsFor)
 }

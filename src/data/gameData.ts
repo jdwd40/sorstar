@@ -8,9 +8,12 @@ import type {
 } from '../types/game'
 
 export const GAME_TARGET_NET_WORTH = 100_000
-export const GAME_VERSION = 2
+export const GAME_VERSION = 3
 export const STARTING_CREDITS = 1200
 export const STARTING_PLANET = 'eden'
+// Deliberately still "v2": the key names the *save*, not the schema, and
+// bumping it on every schema change would strand every browser's save the one
+// time it is least welcome. `migrate` is what carries a save forward.
 export const SAVE_KEY = 'sorstar.save.v2'
 export const LOG_LIMIT = 80
 

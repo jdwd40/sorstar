@@ -67,7 +67,19 @@ export interface Cargo {
 }
 
 export interface Stats {
-  totalProfit: number
+  /**
+   * Realised trading profit: what sales paid out, less what the goods sold
+   * cost.
+   *
+   * Named for exactly that, and never "total profit". It excludes fuel,
+   * upkeep and upgrade spend, all of which are running costs of the business
+   * rather than the result of trading it - and it can run negative while a
+   * player is still very much in profit overall. The label used to read
+   * "Lifetime profit" / "Total Profit", which invited the reading that this
+   * was money made. Net worth is the game's measure of that; this is the
+   * measure of the trading.
+   */
+  tradingProfit: number
   goodsBought: number
   goodsSold: number
   tripsMade: number

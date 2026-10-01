@@ -1,9 +1,9 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { CommodityId, GameState, ShipUpgradeType } from '../types/game'
 import { createGameStore, type AuthUser, type GameStore, type SessionLostReason } from '../services/gameStore'
-import { advanceDay, buyCommodity, sellCommodity } from '../services/marketService'
+import { advanceDay, buyCommodity, cargoBasisAt, sellCommodity } from '../services/marketService'
 import { travel as travelService, type TravelResult } from '../services/travelService'
-import { buyUpgrade } from '../services/playerService'
+import { buyUpgrade, describeUpgrade } from '../services/playerService'
 import { createNewGame, netWorth, withLog } from '../services/gameService'
 import { COMMODITY_MAP, GAME_TARGET_NET_WORTH, PLANET_MAP, dailyUpkeep } from '../data/gameData'
 
@@ -51,7 +51,7 @@ function stampProgress(next: GameState): GameState {
   if (
     nw >= GAME_TARGET_NET_WORTH &&
     stats.goodsSold > 0 &&
-    stats.totalProfit > 0 &&
+    stats.tradingProfit > 0 &&
     !stats.victory
   ) {
     stats = { ...stats, victory: true, victorySeen: false, victoryDay: next.day }
@@ -304,12 +304,11 @@ const apply = useCallback(
       apply(
         (state) => sellCommodity(state, commodityId, qty),
         (before, after) => {
-          // Same basis the store used to record the profit: pre-sale cost
-          // basis, since the post-sale state may have dropped it when the
-          // position sold out completely.
-          const basis =
-            before.costBasis[commodityId] ??
-            before.markets[before.planetId][commodityId].price
+          // Read through the same basis helper the sale used, so the profit the
+          // log reports is the profit the sale booked. Not `before.markets[...]`
+          // inline: that was a third copy of the fallback, and it indexed
+          // markets without a guard.
+          const basis = cargoBasisAt(before, commodityId)
           const earned = after.credits - before.credits
           return {
             icon: '💰',
@@ -368,13 +367,8 @@ const apply = useCallback(
     (type: ShipUpgradeType): ActionResult =>
       apply(
         (state) => buyUpgrade(state, type),
-        (_before, _after, r) => ({
-          icon: '🧰',
-          text: r.upgradeName ? `${r.upgradeName} installed.` : 'Ship upgraded.',
-        }),
-        (_after, r) => ({
-          message: r.upgradeName ? `${r.upgradeName} installed.` : 'Upgrade complete.',
-        }),
+        (_before, _after, r) => ({ icon: '🧰', text: describeUpgrade(r) }),
+        (_after, r) => ({ message: describeUpgrade(r) }),
       ),
     [apply],
   )

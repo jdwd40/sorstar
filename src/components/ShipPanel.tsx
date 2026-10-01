@@ -94,8 +94,8 @@ export default function ShipPanel({ game, travelUpgrade, resetGame }: ShipPanelP
   const free = cargoFree(game)
   const invested = game.stats.upgradesInvested
   const goods = carriedGoods(game)
-  const cargoTotal = goods.reduce((sum, g) => sum + g.realized, 0)
-  const cargoProfit = goods.reduce((sum, g) => sum + g.realized - g.breakEven, 0)
+  const sellsFor = goods.reduce((sum, g) => sum + g.sellsFor, 0)
+  const holdProfit = goods.reduce((sum, g) => sum + g.sellsFor - g.breakEven, 0)
   const nw = netWorth(game)
 
   return (
@@ -168,14 +168,17 @@ export default function ShipPanel({ game, travelUpgrade, resetGame }: ShipPanelP
       <div className="card p-5">
         <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
           <h3 className="font-semibold text-white">Cargo Hold</h3>
-          {cargoTotal > 0 && (
-            <div className="text-sm text-slate-400">
-              Value here:{' '}
-              <span className="text-cyan-300 font-bold">{fmtMoney(cargoTotal)}</span>
-              <span className={`ml-2 ${cargoProfit >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                {cargoProfit >= 0 ? '+' : ''}{fmtMoney(cargoProfit)}
+          {sellsFor > 0 && (
+            <div
+              className="text-sm text-slate-400"
+              title="What selling the whole hold here would credit. It already allows for the market moving under your own order, so it is less than Qty x Price Here."
+            >
+              Sells here:{' '}
+              <span className="text-cyan-300 font-bold">{fmtMoney(sellsFor)}</span>
+              <span className={`ml-2 ${holdProfit >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                {holdProfit >= 0 ? '+' : ''}{fmtMoney(holdProfit)}
               </span>
-              <span className="text-xs text-slate-500"> vs cost {'→'} shown per good</span>
+              <span className="text-xs text-slate-500"> vs what you paid</span>
             </div>
           )}
         </div>
@@ -191,14 +194,26 @@ export default function ShipPanel({ game, travelUpgrade, resetGame }: ShipPanelP
                   <th className="py-2 pr-4">Good</th>
                   <th className="py-2 pr-4 text-right">Qty</th>
                   <th className="py-2 pr-4 text-right">Your Cost</th>
-                  <th className="py-2 pr-4 text-right">Price Here</th>
+                  <th
+                    className="py-2 pr-4 text-right"
+                    title="The listed price per unit. Your own sale pushes it down as you sell."
+                  >
+                    Price Here
+                  </th>
                   <th className="py-2 pr-4 text-right">Per-unit</th>
-                  <th className="py-2 text-right">Value Here</th>
+                  <th
+                    className="py-2 text-right"
+                    title="What selling this line here pays, after the market absorbs your order."
+                  >
+                    Sells For
+                  </th>
                 </tr>
               </thead>
               <tbody>
-                {goods.map(({ commodity, qty, costBasis, herePrice, realized }) => {
-                  const perUnit = herePrice - costBasis
+                {goods.map(({ commodity, qty, costBasis, herePrice, sellsFor }) => {
+                  // Averaged over the fill, not over the listed price: the
+                  // per-unit profit has to be the profit the sale really makes.
+                  const perUnit = sellsFor / qty - costBasis
                   return (
                     <tr key={commodity.id} className="border-b border-slate-800/60">
                       <td className="py-2 pr-4">
@@ -213,7 +228,7 @@ export default function ShipPanel({ game, travelUpgrade, resetGame }: ShipPanelP
                       >
                         {perUnit >= 0 ? '+' : ''}{fmtMoney(perUnit)}
                       </td>
-                      <td className="py-2 text-right text-cyan-300 font-bold">{fmtMoney(realized)}</td>
+                      <td className="py-2 text-right text-cyan-300 font-bold">{fmtMoney(sellsFor)}</td>
                     </tr>
                   )
                 })}

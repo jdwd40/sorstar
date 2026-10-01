@@ -9,7 +9,7 @@ import LogPanel from '../components/LogPanel'
 import VictoryModal from '../components/VictoryModal'
 import { GAME_TARGET_NET_WORTH, PLANET_MAP, cargoCapacityAtLevel } from '../data/gameData'
 import { cargoUsed } from '../services/marketService'
-import { cargoValueAtPlanet, goalProgress, netWorth } from '../services/gameService'
+import { cargoSaleValue, goalProgress, netWorth } from '../services/gameService'
 import { fmt, fmtMoney, fmtPct } from '../utils/format'
 import { sound } from '../utils/sound'
 import type { ActionResult } from '../context/GameContext'
@@ -76,7 +76,7 @@ export default function GamePage() {
   const capacity = cargoCapacityAtLevel(game.ship.cargoLevel)
   const used = cargoUsed(game)
   const nw = netWorth(game)
-  const cargoValue = cargoValueAtPlanet(game)
+  const holdValue = cargoSaleValue(game)
   const progress = goalProgress(game)
   const showVictory = game.stats.victory && !game.stats.victorySeen
 
@@ -171,9 +171,9 @@ export default function GamePage() {
                   informational only and is labelled to say so. */}
               <span
                 className="text-xs text-slate-500"
-                title="What your hold would fetch if you sold it all here right now. Not counted in net worth."
+                title="What your hold would credit you for if you sold it all here right now, after the market absorbs your order. Not counted in net worth."
               >
-                (hold worth {fmtMoney(cargoValue)} here)
+                (hold would sell for {fmtMoney(holdValue)} here)
               </span>
             </div>
           </div>

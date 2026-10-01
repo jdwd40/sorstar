@@ -52,10 +52,15 @@ function ArrivalReport({
 
       {goods.length > 0 && (
         <div className="mb-4">
-          <h3 className="text-sm uppercase tracking-wider text-slate-400 mb-2">Your hold at market price</h3>
+          <h3
+            className="text-sm uppercase tracking-wider text-slate-400 mb-2"
+            title="What the Trade tab would credit you for each line if you sold it here now - the market absorbs your order as you sell, so this sits below Qty x listed price."
+          >
+            Your hold if sold here
+          </h3>
           <div className="space-y-1">
-            {goods.map(({ commodity, qty, herePrice, costBasis, realized }) => {
-              const perUnit = herePrice - costBasis
+            {goods.map(({ commodity, qty, costBasis, sellsFor }) => {
+              const perUnit = sellsFor / qty - costBasis
               return (
                 <div key={commodity.id} className="flex items-center justify-between text-sm">
                   <span className="text-white">
@@ -63,7 +68,7 @@ function ArrivalReport({
                     <span className="text-slate-500"> ×{fmt(qty)}</span>
                   </span>
                   <span className={perUnit >= 0 ? 'text-emerald-400 font-semibold' : 'text-red-400 font-semibold'}>
-                    {perUnit >= 0 ? '+' : ''}{fmtMoney(perUnit)}/unit · {fmtMoney(realized)}
+                    {perUnit >= 0 ? '+' : ''}{fmtMoney(perUnit)}/unit · {fmtMoney(sellsFor)}
                   </span>
                 </div>
               )
@@ -75,7 +80,7 @@ function ArrivalReport({
       {leads.length > 0 && (
         <div className="mb-4">
           <h3 className="text-sm uppercase tracking-wider text-slate-400 mb-2">
-            🛰️ Best buys from here
+            🛰️ Best runs from here
           </h3>
           <div className="space-y-1">
             {leads.map((lead) => (

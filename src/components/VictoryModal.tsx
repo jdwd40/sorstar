@@ -12,6 +12,7 @@ export default function VictoryModal({
   onContinue: () => void
   onNewGame: () => void
 }) {
+  const profit = game.stats.tradingProfit
   return (
     <Modal onClose={onContinue} labelledBy="victory-title">
       <div className="text-center">
@@ -29,14 +30,20 @@ export default function VictoryModal({
         </p>
 
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-6 text-left">
-          <div className="bg-slate-800/50 rounded-lg p-3">
-            <div className="text-xs uppercase tracking-wider text-slate-400">Net Worth</div>
+          <div
+            className="bg-slate-800/50 rounded-lg p-3"
+            title="The highest net worth you have reached, which is what you won on. Your net worth right now may be lower."
+          >
+            <div className="text-xs uppercase tracking-wider text-slate-400">Peak Net Worth</div>
             <div className="text-lg font-bold text-white">{fmtMoney(game.stats.maxNetWorth)}</div>
           </div>
-          <div className="bg-slate-800/50 rounded-lg p-3">
-            <div className="text-xs uppercase tracking-wider text-slate-400">Total Profit</div>
-            <div className={`text-lg font-bold ${game.stats.totalProfit >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-              {game.stats.totalProfit >= 0 ? '+' : ''}{fmtMoney(game.stats.totalProfit)}
+          <div
+            className="bg-slate-800/50 rounded-lg p-3"
+            title="Realised trading profit: what sales paid out, less what the goods cost. Excludes fuel, upkeep and upgrades."
+          >
+            <div className="text-xs uppercase tracking-wider text-slate-400">Trading Profit</div>
+            <div className={`text-lg font-bold ${profit >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+              {profit >= 0 ? '+' : ''}{fmtMoney(profit)}
             </div>
           </div>
           <div className="bg-slate-800/50 rounded-lg p-3">
@@ -47,12 +54,18 @@ export default function VictoryModal({
             <div className="text-xs uppercase tracking-wider text-slate-400">Days Played</div>
             <div className="text-lg font-bold text-white">{fmt(game.day)}</div>
           </div>
-          <div className="bg-slate-800/50 rounded-lg p-3">
-            <div className="text-xs uppercase tracking-wider text-slate-400">Cargo Moved</div>
+          <div
+            className="bg-slate-800/50 rounded-lg p-3"
+            title="Units bought plus units sold. A unit that travels both ways counts twice - it is counted each time it crosses the market."
+          >
+            <div className="text-xs uppercase tracking-wider text-slate-400">Units Traded</div>
             <div className="text-lg font-bold text-white">{fmt(game.stats.goodsBought + game.stats.goodsSold)}</div>
           </div>
-          <div className="bg-slate-800/50 rounded-lg p-3">
-            <div className="text-xs uppercase tracking-wider text-slate-400">Upgrades</div>
+          <div
+            className="bg-slate-800/50 rounded-lg p-3"
+            title="Credits sunk into ship upgrades. Net worth adds this back, so buying an upgrade never moves the goal on its own."
+          >
+            <div className="text-xs uppercase tracking-wider text-slate-400">Upgrade Spend</div>
             <div className="text-lg font-bold text-indigo-300">{fmtMoney(game.stats.upgradesInvested)}</div>
           </div>
         </div>

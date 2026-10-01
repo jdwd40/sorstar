@@ -2,14 +2,18 @@ import type { GameState } from '../types/game'
 import { fmt, fmtMoney } from '../utils/format'
 
 export default function LogPanel({ game }: { game: GameState }) {
+  const profit = game.stats.tradingProfit
   return (
     <div className="card p-5">
       <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
         <h3 className="text-lg font-semibold text-indigo-300">📜 Flight Log</h3>
-        <div className="text-xs text-slate-500">
-          Lifetime profit:{' '}
-          <span className={game.stats.totalProfit >= 0 ? 'text-emerald-400 font-semibold' : 'text-red-400 font-semibold'}>
-            {game.stats.totalProfit >= 0 ? '+' : ''}{fmtMoney(game.stats.totalProfit)}
+        <div
+          className="text-xs text-slate-500"
+          title="Realised trading profit: what sales paid out, less what the goods cost. Excludes fuel, upkeep and upgrades - see net worth for the whole picture."
+        >
+          Trading profit:{' '}
+          <span className={profit >= 0 ? 'text-emerald-400 font-semibold' : 'text-red-400 font-semibold'}>
+            {profit >= 0 ? '+' : ''}{fmtMoney(profit)}
           </span>
           {' · '}bought {fmt(game.stats.goodsBought)} · sold {fmt(game.stats.goodsSold)} units
         </div>

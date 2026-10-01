@@ -66,15 +66,6 @@ function regenerateStock(stock: number, baseStock: number, stockMax: number): nu
 }
 
 /**
- * The continuous price curve, in whole-credit fractions.
- *
- * `marketPrice` rounds this to an integer, which is right for anything the
- * player *reads* but wrong for anything the player *pays*: rounding turns the
- * curve into a staircase, and on cheap goods a single 1 cr step is a fifth of
- * the price. Trade fills are priced off this instead, so impact is a smooth
- * quantity rather than a quantised one.
- */
-/**
  * Memoised market prices. A price depends only on (planet, commodity, day,
  * stock), and the fill walks query long runs of adjacent stock levels on every
  * quote, so this turns a per-render O(quantity) walk into a cache hit.
@@ -343,6 +334,54 @@ export function quoteSell(
   }
 }
 
+/**
+ * The one number a sale of `qty` is worth: what `sellCommodity` will actually
+ * credit, to the credit.
+ *
+ * Every surface that quotes a sale reads it from here - the Trade tab's sell
+ * button, the Ship tab's hold valuation, the arrival report. That is
+ * deliberate. The obvious shortcut is `qty * listing.price`, and it was what
+ * this used to do: a resting price is the price of the *next* unit, so valuing
+ * a load by it ignores the impact of the load itself and overstates the figure
+ * by more than 10% on a full hold. A player told their cargo is worth 900 cr
+ * and paid 786 has been lied to, and the Ship tab had no way to know it.
+ *
+ * It is the buy side's mirror image: `quoteBuy` is what the buy button charges,
+ * and quoting a buy any other way is the same bug in the other direction.
+ */
+export function saleValue(
+  state: GameState,
+  commodityId: CommodityId,
+  qty: number,
+): number {
+  const listing = state.markets[state.planetId]?.[commodityId]
+  const planet = PLANET_MAP[state.planetId]
+  if (!listing || !planet) return 0
+  const units = wholeUnits(qty)
+  if (units <= 0) return 0
+  return quoteSell(planet, COMMODITY_MAP[commodityId], listing, units, state.day).proceeds
+}
+
+/**
+ * What the player paid per unit of a held commodity.
+ *
+ * `migrate` drops a cost-basis entry it cannot read, so this fallback is
+ * reachable from a repaired save, and it used to differ per call site: net
+ * worth used the commodity's base price while the hold view and the sale
+ * itself used the local market price. The same missing datum therefore had two
+ * answers, and net worth could disagree with the sale it was supposed to
+ * measure. The local market price wins: it is what a sale would be measured
+ * against, and it keeps the three read sites in agreement.
+ */
+export function cargoBasisAt(state: GameState, commodityId: CommodityId): number {
+  const basis = state.costBasis[commodityId]
+  if (basis !== undefined && Number.isFinite(basis)) return basis
+  return (
+    state.markets[state.planetId]?.[commodityId]?.price ??
+    COMMODITY_MAP[commodityId].basePrice
+  )
+}
+
 export function buyCommodity(
   state: GameState,
   commodityId: CommodityId,
@@ -418,7 +457,7 @@ export function sellCommodity(
     qty,
     state.day,
   )
-  const basis = state.costBasis[commodityId] ?? listing.price
+  const basis = cargoBasisAt(state, commodityId)
   const profit = proceeds - basis * qty
   const nextMarkets = {
     ...state.markets,
@@ -441,7 +480,7 @@ export function sellCommodity(
       markets: nextMarkets,
       stats: {
         ...state.stats,
-        totalProfit: state.stats.totalProfit + profit,
+        tradingProfit: state.stats.tradingProfit + profit,
         goodsSold: state.stats.goodsSold + qty,
       },
     },

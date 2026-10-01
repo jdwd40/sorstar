@@ -1,4 +1,4 @@
-import type { CommodityId, GameState, MarketListing } from '../types/game'
+import type { CommodityId, GameState, MarketListing, Stats } from '../types/game'
 import { COMMODITY_MAP, GAME_VERSION, PLANETS, PLANET_MAP } from '../data/gameData'
 
 function assertNumber(v: unknown, label: string): asserts v is number {
@@ -119,9 +119,6 @@ function assertModel(raw: GameState): void {
   if (raw.costBasis !== undefined && (raw.costBasis === null || typeof raw.costBasis !== 'object')) {
     throw new Error('Corrupt save: costBasis must be an object')
   }
-  if (!raw.stats || typeof raw.stats !== 'object') {
-    throw new Error('Corrupt save: stats missing')
-  }
   assertNumber(raw.ship.cargoLevel, 'ship.cargoLevel')
   assertNumber(raw.ship.engineLevel, 'ship.engineLevel')
   assertNumber(raw.ship.navLevel, 'ship.navLevel')
@@ -156,6 +153,28 @@ export function migrate(raw: GameState): GameState {
   }
 
   if (state.version < GAME_VERSION) {
+    // v3: `totalProfit` was renamed `tradingProfit`. The number did not change
+    // - it has always been realised trading profit only - but the old name
+    // invited it to be read as money made, so it is carried forward under a
+    // name that says what it is. A value that cannot be read is still reported
+    // rather than zeroed, on the same grounds as the self-healing pass below.
+    const legacy = state.stats as unknown as Record<string, unknown>
+    if ('totalProfit' in legacy) {
+      const { totalProfit: legacyProfit, ...kept } = legacy
+      state = {
+        ...state,
+        stats: {
+          ...(kept as unknown as Stats),
+          tradingProfit: statOr(
+            legacyProfit as number,
+            0,
+            'stats.totalProfit (legacy tradingProfit)',
+          ),
+        },
+      }
+    } else if (!('tradingProfit' in legacy)) {
+      state = { ...state, stats: { ...state.stats, tradingProfit: 0 } }
+    }
     state = { ...state, version: GAME_VERSION }
   }
 
@@ -172,12 +191,17 @@ export function migrate(raw: GameState): GameState {
     //
     // Cargo and cost basis are per-unit records, so a bad entry is dropped and
     // the commodity reverts to the same fallback every read site already
-    // handles: base price for net worth, the market price for a sale.
+    // handles: the local market price, which is what a sale is measured
+    // against.
     cargo: cleanCargo(state.cargo),
     costBasis: cleanUnits(state.costBasis),
+    // The market panel draws its day-over-day arrow from `prevPrice`. A
+    // listing missing it (or holding a non-number) renders "NaN%" next to a
+    // price, so fall back to treating the price as unchanged.
+    markets: repairPrevPrices(state.markets),
     stats: {
       ...stats,
-      totalProfit: statOr(stats.totalProfit, 0, 'totalProfit'),
+      tradingProfit: statOr(stats.tradingProfit, 0, 'tradingProfit'),
       goodsBought: statOr(stats.goodsBought, 0, 'goodsBought'),
       goodsSold: statOr(stats.goodsSold, 0, 'goodsSold'),
       tripsMade: statOr(stats.tripsMade, 0, 'tripsMade'),
@@ -186,4 +210,23 @@ export function migrate(raw: GameState): GameState {
     },
   }
   return state
+}
+
+/** Fills in a missing or non-numeric `prevPrice` from the listing's price. */
+function repairPrevPrices(markets: GameState['markets']): GameState['markets'] {
+  const out: GameState['markets'] = {}
+  for (const [planetId, record] of Object.entries(markets)) {
+    const fixed: Record<string, MarketListing> = {}
+    for (const [commodityId, listing] of Object.entries(record)) {
+      fixed[commodityId] = {
+        ...listing,
+        prevPrice:
+          typeof listing.prevPrice === 'number' && Number.isFinite(listing.prevPrice)
+            ? listing.prevPrice
+            : listing.price,
+      }
+    }
+    out[planetId] = fixed as GameState['markets'][string]
+  }
+  return out
 }

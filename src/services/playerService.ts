@@ -11,7 +11,17 @@ export interface UpgradeResult {
   state: GameState
   error?: string
   applied?: boolean
+  /** e.g. "Cargo Hold Lv1". */
   upgradeName?: string
+  /**
+   * What the upgrade actually changed, e.g. "20 units (+8)".
+   *
+   * Kept separate from the name because the two are different claims. An
+   * upgrade that grew the hold from 12 to 20 added 8 units and now *holds* 20;
+   * reporting the total as the addition told the player they had gained 20 when
+   * they had gained 8, and made every later tier look like a windfall too.
+   */
+  upgradeDetail?: string
 }
 
 export function nextUpgradeCost(state: GameState, type: ShipUpgradeType): number {
@@ -54,18 +64,32 @@ export function buyUpgrade(state: GameState, type: ShipUpgradeType): UpgradeResu
 
   let ship = state.ship
   let upgradeName = ''
+  let upgradeDetail = ''
   switch (type) {
-    case 'cargo':
-      ship = { ...ship, cargoLevel: ship.cargoLevel + 1 }
-      upgradeName = `Cargo Hold Lv${ship.cargoLevel} (+${cargoCapacityAtLevel(ship.cargoLevel)} units)`
+    case 'cargo': {
+      const from = ship.cargoLevel
+      ship = { ...ship, cargoLevel: from + 1 }
+      const before = cargoCapacityAtLevel(from)
+      const after = cargoCapacityAtLevel(ship.cargoLevel)
+      upgradeName = `Cargo Hold Lv${ship.cargoLevel}`
+      // New total first, then what it gained. `(+${after})` read as "you just
+      // got 20 units" for a tier that only adds 8.
+      upgradeDetail = `${after} units (+${after - before})`
       break
-    case 'engine':
-      ship = { ...ship, engineLevel: ship.engineLevel + 1 }
-      upgradeName = `Warp Engine Lv${ship.engineLevel} (${fuelCostAtLevel(ship.engineLevel)} cr/ly)`
+    }
+    case 'engine': {
+      const from = ship.engineLevel
+      ship = { ...ship, engineLevel: from + 1 }
+      upgradeName = `Warp Engine Lv${ship.engineLevel}`
+      // Fuel only ever falls, so state the tier it came down from rather than
+      // leaving the player to work it out from the Ship tab.
+      upgradeDetail = `${fuelCostAtLevel(ship.engineLevel)} cr/ly (was ${fuelCostAtLevel(from)})`
       break
+    }
     case 'nav':
       ship = { ...ship, navLevel: ship.navLevel + 1 }
-      upgradeName = 'Navigation Array'
+      upgradeName = `Navigation Array Lv${ship.navLevel}`
+      upgradeDetail = 'market intel online'
       break
   }
 
@@ -81,5 +105,20 @@ export function buyUpgrade(state: GameState, type: ShipUpgradeType): UpgradeResu
     },
     applied: true,
     upgradeName,
+    upgradeDetail,
   }
+}
+
+/**
+ * One sentence for the log and the toast, so the two cannot drift.
+ *
+ * These had each grown their own inline ternary over `upgradeName`, which is
+ * how the cargo tier ended up saying "20 units installed" in one place and
+ * "(+20 units)" in the other.
+ */
+export function describeUpgrade(result: UpgradeResult): string {
+  if (!result.upgradeName) return 'Ship upgraded.'
+  return result.upgradeDetail
+    ? `Installed ${result.upgradeName} — ${result.upgradeDetail}.`
+    : `Installed ${result.upgradeName}.`
 }
