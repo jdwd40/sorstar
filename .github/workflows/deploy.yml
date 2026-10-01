@@ -1,0 +1,71 @@
+name: Check, build, and deploy Sorstar
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sorstar-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    env:
+      DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+      DEPLOY_PORT: ${{ vars.DEPLOY_PORT }}
+      DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run verify
+      - run: npm run test:deploy
+      - run: npm run build
+      - run: npm run verify:build
+      - name: Validate fixed destination
+        run: node --input-type=module -e 'import { validateConfig } from "./scripts/deploy-sorstar.mjs"; validateConfig(process.env)'
+      - name: Capture neighbouring app markers before deployment
+        run: node scripts/verify-live.mjs snapshot "$RUNNER_TEMP/sorstar-neighbours.json"
+      - name: Configure restricted SSH identity and pinned host keys
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          test -n "$DEPLOY_SSH_KEY"
+          test -n "$DEPLOY_KNOWN_HOSTS"
+          umask 077
+          mkdir -p "$RUNNER_TEMP/sorstar-ssh"
+          chmod 700 "$RUNNER_TEMP/sorstar-ssh"
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$RUNNER_TEMP/sorstar-ssh/identity"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$RUNNER_TEMP/sorstar-ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/sorstar-ssh/identity" "$RUNNER_TEMP/sorstar-ssh/known_hosts"
+          ssh-keygen -F '[jdwd40.com]:4020' -f "$RUNNER_TEMP/sorstar-ssh/known_hosts" > /dev/null
+      - name: Deploy contents to the forced Sorstar root
+        run: |
+          set -euo pipefail
+          export DEPLOY_IDENTITY_FILE="$RUNNER_TEMP/sorstar-ssh/identity"
+          export DEPLOY_KNOWN_HOSTS_FILE="$RUNNER_TEMP/sorstar-ssh/known_hosts"
+          node scripts/deploy-sorstar.mjs dist
+      - name: Verify live build checksums, direct routes, and neighbouring apps
+        run: node scripts/verify-live.mjs verify "$RUNNER_TEMP/sorstar-neighbours.json"
+      - name: Remove deployment credentials
+        if: always()
+        run: rm -rf -- "$RUNNER_TEMP/sorstar-ssh"

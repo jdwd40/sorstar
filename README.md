@@ -30,7 +30,7 @@ The loop: **Buy** a commodity at a planet where it's cheap → **Travel** to a p
 
 ## PocketBase persistence
 
-Saves are stored permanently on a PocketBase server instead of the browser's localStorage, so they survive cache clears and can live on a shared/hosted instance. Each browser gets its own anonymous PocketBase account on first use, so every device keeps its own save. The pilot's generated credentials are kept in localStorage (never a real account password) so an expired session resumes the same pilot — and its save — instead of silently starting over. Use **Log in / Sign up** in the header (also available while playing) to bind that save to an email — a new account adopts the browser's current game, and signing in on another device pulls up your account's save.
+Production uses browser-local saves by default: progress stays in that browser and clearing site data loses it. PocketBase is an optional, separately configured service. When enabled, saves are stored on that server instead of the browser's localStorage. Each browser gets its own anonymous PocketBase account on first use, so every device keeps its own save. The pilot's generated credentials are kept in localStorage (never a real account password) so an expired session resumes the same pilot — and its save — instead of silently starting over. Use **Log in / Sign up** in the header (also available while playing) to bind that save to an email — a new account adopts the browser's current game, and signing in on another device pulls up your account's save.
 
 A save in flight is part of the save: a jump interrupted by an encounter carries its type, the two planets, the days, and the fuel already spent, and nothing else — no strings, no functions. A v5 save loads docked at its planet rather than mid-jump, a save naming an encounter this build no longer has lands the ship instead of stranding it, and a flight whose dates could not have happened (more days flown than the flight is long, a departure in the future) is dropped.
 
@@ -73,8 +73,43 @@ Schema changes are committed as JS migrations in `pb/pb_migrations` and are appl
 ## Tech & architecture
 
 - Vite + React 18 + TypeScript + Tailwind CSS.
-- **Persistence is isolated behind a service interface** (`GameStore` in `src/services/gameStore.ts`). Two implementations exist: `PocketBaseGameStore` when `VITE_PB_URL` is set at build time, and `LocalStorageGameStore` otherwise. Nothing defaults to either, so a production build without configuration stores saves locally.
+- **Persistence is isolated behind a service interface** (`GameStore` in `src/services/gameStore.ts`). Two implementations exist: `PocketBaseGameStore` when `VITE_PB_URL` is set at build time, and `LocalStorageGameStore` otherwise. No PocketBase URL is assumed, so a production build without configuration stores saves locally.
 - Optional WebAudio sound effects (buy/sell/travel/upgrade/wins) with a header mute toggle.
+
+## Deployment
+
+Production URL: https://jdwd40.com/sorstar. GitHub is the source of truth. Pushes to `main` run `.github/workflows/deploy.yml`: Node 22, `npm ci`, lint, typecheck, game verification, deployment/service-worker/live-verifier safety tests, `npm run build`, and `npm run verify:build`, then automatic restricted rsync deployment. Manual `workflow_dispatch` runs deploy only from `main`. Runs share one concurrency group and do not cancel a deployment in progress.
+
+The controller has configured encrypted secrets `DEPLOY_SSH_KEY` and `DEPLOY_KNOWN_HOSTS` (pinned `[jdwd40.com]:4020` host keys) and variables `DEPLOY_HOST=jdwd40.com`, `DEPLOY_PORT=4020`, `DEPLOY_USER=jd`. The dedicated key is forced to `restrict,command="/usr/bin/rrsync -wo /var/www/jdwd40.com/html/sorstar"`. Its remote `/` is exactly `/var/www/jdwd40.com/html/sorstar`; the destination cannot be configured. The verified first backup is **outside the web root**, at `/home/jd/deployment-backups/sorstar/before-cicd-20261001T140952Z.tar.gz` on `app-vps`. No Nginx, backend, or database changes are needed.
+
+CI captures portfolio, coins, study, and dc titles/checksums before rsync, then compares them afterward. It also compares the deployed entrypoint and every build file by SHA-256, checks both `/sorstar` and `/sorstar/`, and checks direct refresh of `/sorstar/game` (including its trailing-slash form). A missing asset served as status-200 fallback HTML fails verification. The old `/sorstar/sw.js` is replaced by a retirement worker: it unregisters only that exact scope, refreshes only Sorstar windows, and deletes only caches whose nonempty contents are entirely same-origin `/sorstar/` URLs. Mixed/empty caches and browser saves remain intact.
+
+Troubleshoot with `gh run list --repo jdwd40/sorstar --workflow deploy.yml`, then `gh run view RUN_ID --repo jdwd40/sorstar --log-failed`. Check exact variables, nonempty secrets, pinned host keys, and public SSH reachability on port 4020. A verification failure after rsync does not roll back files automatically; inspect the failed URL or neighbour checksum before retrying. Delayed rsync updates reduce partial-file exposure but do not make the whole directory switch atomic.
+
+For an emergency/manual deployment, trigger the same checks and secret-backed deployment from `main`:
+
+```sh
+gh workflow run deploy.yml --ref main --repo jdwd40/sorstar
+```
+
+To retry the failed jobs of an existing run:
+
+```sh
+gh run rerun RUN_ID --failed --repo jdwd40/sorstar
+```
+
+The deployment private key exists only in the encrypted GitHub secret; it cannot be retrieved from GitHub. A low-level deployment from a reviewed checkout, after the same checks and build, requires a **separately approved dedicated restricted identity** and controller-provided pinned hosts file (both nonempty regular files, mode 600). **Never substitute an ordinary shell identity**: the script's fixed remote `/` is safe only with the Sorstar-only forced rrsync root.
+
+```sh
+DEPLOY_HOST=jdwd40.com DEPLOY_PORT=4020 DEPLOY_USER=jd \
+  DEPLOY_IDENTITY_FILE=/absolute/path/to/sorstar-restricted-identity \
+  DEPLOY_KNOWN_HOSTS_FILE=/absolute/path/to/pinned-known-hosts \
+  node scripts/deploy-sorstar.mjs dist
+```
+
+For a low-level manual run, first capture neighbours with `node scripts/verify-live.mjs snapshot node_modules/.tmp/sorstar-neighbours.json` and afterward run `node scripts/verify-live.mjs verify node_modules/.tmp/sorstar-neighbours.json`. The project scratch directory `node_modules/.tmp` is created by the prerequisite typecheck/build. Production builds leave `VITE_PB_URL` unset and retain localStorage persistence; optional PocketBase setup is separate and must not repurpose existing services.
+
+The page title is preserved as `Sorstar - Space Trading Command Center`, matching the existing homepage CI assertion. This keeps that check compatible without changing the unrelated homepage repository.
 
 ## Scripts
 
@@ -89,3 +124,5 @@ Schema changes are committed as JS migrations in `pb/pb_migrations` and are appl
 | `npm run pb:serve` | Run the PocketBase server |
 | `npm run typecheck` | TypeScript across app, build config, and the verification script |
 | `npm run verify` | Run the headless game-logic sanity checks (`scripts/verify-game.ts`) |
+| `npm run test:deploy` | Check deployment guards, scoped service-worker retirement, and live verification with mocks |
+| `npm run verify:build` | Validate nonempty build files and `/sorstar/` asset paths |

@@ -9,7 +9,9 @@
     "lint": "eslint .",
     "typecheck": "tsc -b",
     "preview": "vite preview",
-    "verify": "tsx scripts/verify-game.ts",
+    "verify": "node --import tsx scripts/verify-game.ts",
+    "test:deploy": "node --import tsx --test scripts/*.test.mjs",
+    "verify:build": "node scripts/verify-build.mjs",
     "pb:install": "sh pb/install.sh",
     "pb:setup": "sh pb/setup.sh",
     "pb:serve": "sh pb/start.sh"
