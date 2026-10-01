@@ -5,9 +5,7 @@ import { cargoFree, cargoUsed, priceDirection, quoteBuy, quoteSell } from '../se
 import { commodityEventScale } from '../services/marketEventService'
 import { fmt, fmtMoney } from '../utils/format'
 import type { ActionResult } from '../context/GameContext'
-import GameBadge from './ui/GameBadge'
-import MarketAlert from './ui/MarketAlert'
-import { moveTone } from './ui/marketBadges'
+import MarketAlert, { EventMoveBadge } from './ui/MarketAlert'
 import { IconPlanetType } from './ui/Icons'
 
 interface MarketPanelProps {
@@ -25,10 +23,11 @@ function priceBand(price: number, base: number, mod: number): 'cheap' | 'fair' |
   return 'fair'
 }
 
+// The band is read from the buyer's side: green is a bargain, red is dear.
 const PRICE_COLOR: Record<'cheap' | 'fair' | 'dear', string> = {
-  cheap: 'text-emerald-300',
+  cheap: 'text-emerald-300 bg-emerald-500/15',
   fair: 'text-white',
-  dear: 'text-rose-300',
+  dear: 'text-rose-300 bg-rose-500/15',
 }
 
 const ARROW: Record<'up' | 'down' | 'flat', string> = {
@@ -37,11 +36,17 @@ const ARROW: Record<'up' | 'down' | 'flat', string> = {
   flat: '·',
 }
 
+// Same side as the band, so a green arrow never sits under a red price: a
+// rise is amber pressure, a fall is green.
 const ARROW_COLOR: Record<'up' | 'down' | 'flat', string> = {
-  up: 'text-emerald-300',
-  down: 'text-rose-300',
+  up: 'text-amber-300',
+  down: 'text-emerald-300',
   flat: 'text-slate-500',
 }
+
+// The goods column stays put while a phone swipes across to Buy and Sell. The
+// wrapper's 1rem padding counts against `left`, so -1rem pins it to the edge.
+const STICKY_CELL = 'sticky -left-4 z-10 bg-slate-900 pl-2 sm:static sm:bg-transparent'
 
 /**
  * The market.
@@ -97,6 +102,7 @@ export default function MarketPanel({ game, planet, buy, sell }: MarketPanelProp
         ? quoteSell(planet, commodity, listing, qty, game.day, eventScale)
         : { proceeds: 0 }
       const sellValue = sellQuote.proceeds
+      const sellUnit = qty > 0 ? sellValue / qty : 0
 
       let buyTooltip = `Buy ${qty} for ${fmtMoney(buyCost)}`
       if (!canBuy) {
@@ -121,6 +127,7 @@ export default function MarketPanel({ game, planet, buy, sell }: MarketPanelProp
         canBuy,
         canSell,
         sellValue,
+        sellUnit,
         buyTooltip,
         band,
         dir,
@@ -164,12 +171,15 @@ export default function MarketPanel({ game, planet, buy, sell }: MarketPanelProp
               </span>
             </p>
           </div>
-          <div className="flex items-center gap-3 text-[11px] text-slate-500">
-            <span title="A ▲ or ▼ means the price moved while you were away">
-              <span className="text-emerald-300">▲</span> dearer ·{' '}
-              <span className="text-rose-300">▼</span> cheaper
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-500">
+            <span className="flex items-center gap-1.5" title="Price against this world's usual level">
+              <span className={`rounded px-1 ${PRICE_COLOR.cheap}`}>cheap</span>
+              <span className={`rounded px-1 ${PRICE_COLOR.dear}`}>dear</span>
             </span>
-            <span className="sm:hidden">swipe the table →</span>
+            <span title="A ▲ or ▼ means the price moved since yesterday">
+              <span className={ARROW_COLOR.up}>▲</span> rising ·{' '}
+              <span className={ARROW_COLOR.down}>▼</span> falling
+            </span>
           </div>
         </div>
 
@@ -177,7 +187,7 @@ export default function MarketPanel({ game, planet, buy, sell }: MarketPanelProp
           <table className="w-full min-w-[36rem] text-sm">
             <thead>
               <tr className="table-head">
-                <th className="th">Good</th>
+                <th className={`th ${STICKY_CELL}`}>Good</th>
                 <th className="th text-right">Price</th>
                 <th className="th text-right">Stock</th>
                 <th className="th text-right">Held</th>
@@ -200,29 +210,40 @@ export default function MarketPanel({ game, planet, buy, sell }: MarketPanelProp
                   canBuy,
                   canSell,
                   sellValue,
+                  sellUnit,
                   buyTooltip,
                   band,
                   dir,
                   eventPct,
                   eventScale,
                 }) => (
-                  <tr key={commodity.id} className="row row-hover">
-                    <td className="td">
+                  <tr
+                    key={commodity.id}
+                    className={`row row-hover ${
+                      eventPct === 0 ? '' : eventScale > 1 ? 'bg-amber-500/[0.06]' : 'bg-emerald-500/[0.05]'
+                    }`}
+                  >
+                    <td
+                      className={`td ${STICKY_CELL} ${
+                        eventPct === 0
+                          ? ''
+                          : eventScale > 1
+                            ? 'shadow-[inset_3px_0_0_rgba(251,191,36,0.75)]'
+                            : 'shadow-[inset_3px_0_0_rgba(52,211,153,0.7)]'
+                      }`}
+                    >
                       <div className="flex items-center gap-2">
                         <span className="text-xl" aria-hidden="true">
                           {commodity.icon}
                         </span>
                         <div>
-                          <div className="flex items-center gap-1.5">
+                          <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
                             <span className="font-medium text-white">{commodity.name}</span>
                             {eventPct !== 0 && (
-                              <GameBadge
-                                tone={moveTone(eventScale)}
+                              <EventMoveBadge
+                                scale={eventScale}
                                 title="A market event is moving this price"
-                              >
-                                {eventPct > 0 ? '+' : ''}
-                                {eventPct}%
-                              </GameBadge>
+                              />
                             )}
                           </div>
                           <div className="hidden max-w-[16rem] text-xs text-slate-500 sm:block">
@@ -236,7 +257,7 @@ export default function MarketPanel({ game, planet, buy, sell }: MarketPanelProp
                           day it happens rather than once on first paint. */}
                       <div
                         key={`${commodity.id}-${listing?.price ?? 0}`}
-                        className={`-mx-1 rounded px-1 font-semibold ${PRICE_COLOR[band]} ${
+                        className={`num -mr-1 ml-auto w-fit rounded px-1 font-semibold ${PRICE_COLOR[band]} ${
                           dir === 'up'
                             ? 'price-flash-up'
                             : dir === 'down'
@@ -287,7 +308,9 @@ export default function MarketPanel({ game, planet, buy, sell }: MarketPanelProp
                     <td className="td text-right">
                       {owned > 0 ? (
                         <div>
-                          <div className="num font-semibold text-cyan-200">{fmt(owned)}</div>
+                          <div className="num ml-auto w-fit rounded-md bg-cyan-500/15 px-1.5 font-bold text-cyan-100 ring-1 ring-inset ring-cyan-400/30">
+                            {fmt(owned)}
+                          </div>
                           <div
                             className="meter ml-auto mt-1 w-10"
                             aria-hidden="true"
@@ -336,7 +359,10 @@ export default function MarketPanel({ game, planet, buy, sell }: MarketPanelProp
                         {canBuy ? (
                           <>
                             {fmtMoney(buyCost)}
-                            <span className="text-slate-600"> · {fmtMoney(buyUnit)}/u</span>
+                            {/* The average fill is only news when the order moves the price. */}
+                            {qty > 1 && Math.round(buyUnit) !== listing?.price && (
+                              <span className="block text-amber-300/80">avg {fmtMoney(buyUnit)}/u</span>
+                            )}
                           </>
                         ) : (
                           '—'
@@ -348,12 +374,21 @@ export default function MarketPanel({ game, planet, buy, sell }: MarketPanelProp
                         onClick={() => handleSell(commodity.id, qty)}
                         disabled={!canSell}
                         title={owned === 0 ? 'Nothing to sell' : `Sell ${qty} for ${fmtMoney(sellValue)}`}
-                        className="btn-ghost btn-sm w-full"
+                        className={`btn-sm w-full ${canSell ? 'btn-success' : 'btn-ghost'}`}
                       >
                         Sell
                       </button>
                       <div className="num mt-1 whitespace-nowrap text-[10px] text-slate-400">
-                        {canSell ? fmtMoney(sellValue) : '—'}
+                        {canSell ? (
+                          <>
+                            {fmtMoney(sellValue)}
+                            {qty > 1 && Math.round(sellUnit) !== listing?.price && (
+                              <span className="block text-amber-300/80">avg {fmtMoney(sellUnit)}/u</span>
+                            )}
+                          </>
+                        ) : (
+                          '—'
+                        )}
                       </div>
                     </td>
                   </tr>

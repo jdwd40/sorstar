@@ -55,11 +55,11 @@ export default function StartPage() {
 
         {/* The whole sector, at a glance. Every world you can trade with, in the
             colours you will meet them in. */}
-        <ul className="mb-8 flex max-w-3xl flex-wrap items-start justify-center gap-x-4 gap-y-3">
+        <ul className="mb-8 flex max-w-3xl flex-wrap items-start justify-center gap-x-3 gap-y-4 sm:gap-x-5">
           {PLANETS.map((p) => (
-            <li key={p.id} className="flex w-16 flex-col items-center gap-1">
-              <PlanetVisual planet={p} size="sm" />
-              <span className="text-[10px] leading-tight text-slate-400">{p.name}</span>
+            <li key={p.id} className="flex w-16 flex-col items-center gap-1.5">
+              <PlanetVisual planet={p} size="md" />
+              <span className="text-[10px] font-medium leading-tight text-slate-300">{p.name}</span>
             </li>
           ))}
         </ul>
@@ -115,7 +115,7 @@ export default function StartPage() {
             </div>
 
             <div className="mb-4 flex items-center gap-3 rounded-lg border border-slate-700/70 bg-slate-900/40 p-3">
-              <PlanetVisual planet={planet ?? undefined} size="md" highlight="current" />
+              <PlanetVisual planet={planet ?? undefined} size="md" highlight="current" className="m-2" />
               <div className="min-w-0">
                 <div className="font-semibold text-white">{planet?.name ?? 'Sector'}</div>
                 <div className="flex items-center gap-1 text-[11px] text-slate-500">

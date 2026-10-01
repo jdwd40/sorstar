@@ -27,7 +27,7 @@ interface EncounterModalProps {
  *
  * Costs are shown where they are certain and hidden where they are not. A
  * quoted payment is never a surprise, and anything the player is gambling on
- * is described as a gamble rather than quoted at the exact figure the seed
+ * is marked as a gamble rather than quoted at the exact figure the seed
  * already knows.
  */
 export default function EncounterModal({ game, onChoose, onResolved }: EncounterModalProps) {
@@ -39,74 +39,91 @@ export default function EncounterModal({ game, onChoose, onResolved }: Encounter
 
   return (
     <Modal onClose={() => {}} labelledBy="encounter-title" dismissable={false} tone="alert">
-      <div className="mb-3 flex flex-wrap items-center gap-2">
-        <GameBadge tone="warn" pulse>
-          <IconWarning className="h-3 w-3" />
-          Jump interrupted
-        </GameBadge>
-        <span className="num text-[11px] uppercase tracking-wider text-slate-500">
-          Day {fmt(game.day)}
-          {destination && (
-            <>
-              {' '}
-              · bound for{' '}
-              <span className="inline-flex items-center gap-1 align-middle text-slate-300">
+      <div className="relative -mx-6 -mt-6 mb-4 overflow-hidden border-b border-amber-400/20 bg-gradient-to-b from-amber-500/15 to-transparent px-6 pb-4 pt-5">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <GameBadge tone="warn" pulse icon={<IconWarning className="h-3 w-3" />}>
+            Jump interrupted
+          </GameBadge>
+          <span className="num flex items-center gap-1 text-[11px] uppercase tracking-wider text-slate-400">
+            Day {fmt(game.day)}
+            {destination && (
+              <>
+                <span className="text-slate-600">·</span>
+                bound for
                 <PlanetVisual planet={destination} size="xs" />
-                {destination.name}
-              </span>
-            </>
-          )}
-        </span>
-      </div>
+                <span className="text-slate-200">{destination.name}</span>
+              </>
+            )}
+          </span>
+        </div>
 
-      <div className="mb-4 flex items-center gap-4">
-        <span
-          className="flex h-14 w-14 shrink-0 items-center justify-center rounded-full border border-amber-400/40 bg-amber-500/10 text-3xl shadow-[0_0_30px_-8px_rgba(251,191,36,0.8)]"
-          aria-hidden="true"
-        >
-          {icon}
-        </span>
-        <h2 id="encounter-title" className="text-xl font-bold uppercase tracking-wide text-white">
-          {title}
-        </h2>
+        <div className="flex items-center gap-4">
+          <span
+            className="event-pulse flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl border border-amber-400/50 bg-slate-950/70 text-4xl"
+            aria-hidden="true"
+          >
+            {icon}
+          </span>
+          <div className="min-w-0">
+            <h2
+              id="encounter-title"
+              className="text-2xl font-black uppercase leading-tight tracking-wide text-amber-50"
+            >
+              {title}
+            </h2>
+            <p className="mt-1 text-sm text-slate-300">{description}</p>
+          </div>
+        </div>
       </div>
-
-      <p className="mb-4 text-sm text-slate-300">{description}</p>
 
       <div className="space-y-2">
         {options.map((option) => {
           const blocked = option.blockedReason !== undefined
+          // Certain: the cost is quoted. Risky: the outcome is not. Otherwise
+          // the choice is free and its result is known.
+          const kind = option.risk ? 'risky' : option.cost > 0 ? 'paid' : 'safe'
           return (
             <button
               key={option.id}
               onClick={() => onResolved(onChoose(option.id))}
               disabled={blocked}
               title={option.blockedReason}
-              className={`w-full rounded-lg border px-4 py-3 text-left transition-colors ${
+              className={`group w-full rounded-xl border px-4 py-3 text-left transition-all ${
                 blocked
-                  ? 'cursor-not-allowed border-slate-800 bg-slate-800/30 text-slate-500'
-                  : 'border-slate-600 bg-slate-800/70 hover:border-amber-400/70 hover:bg-slate-800'
+                  ? 'cursor-not-allowed border-slate-800 bg-slate-900/40 text-slate-500'
+                  : kind === 'risky'
+                    ? 'border-amber-400/30 bg-slate-800/60 hover:border-amber-300/80 hover:bg-amber-500/10 hover:shadow-[0_0_24px_-10px_rgba(251,191,36,0.9)]'
+                    : 'border-slate-600/80 bg-slate-800/60 hover:border-indigo-300/80 hover:bg-indigo-500/10 hover:shadow-[0_0_24px_-10px_rgba(129,140,248,0.9)]'
               }`}
             >
               <div className="flex items-start justify-between gap-3">
-                <span className="font-semibold text-white">{option.label}</span>
-                {option.cost > 0 ? (
-                  <GameBadge tone="warn" title="A certain cost">
-                    {fmtMoney(option.cost)} cr
+                <span className={`text-base font-bold ${blocked ? 'text-slate-500' : 'text-white'}`}>
+                  {option.label}
+                </span>
+                {blocked ? (
+                  <GameBadge tone="neutral" icon={<IconBlocked className="h-3 w-3" />}>
+                    Unavailable
                   </GameBadge>
-                ) : null}
+                ) : kind === 'paid' ? (
+                  <GameBadge tone="info" title="A certain cost, charged exactly">
+                    <span className="num">-{fmtMoney(option.cost)}</span>
+                  </GameBadge>
+                ) : kind === 'risky' ? (
+                  <GameBadge tone="warn" title="The outcome is not certain">
+                    {option.cost > 0 && <span className="num">-{fmtMoney(option.cost)} ·</span>}
+                    risky
+                  </GameBadge>
+                ) : (
+                  <GameBadge tone="good" title="No cost">
+                    free
+                  </GameBadge>
+                )}
               </div>
               <div className="mt-0.5 text-xs text-slate-400">
                 {blocked ? option.blockedReason : option.detail}
               </div>
               {!blocked && option.risk && (
-                <div className="mt-1 text-xs italic text-amber-300/80">{option.risk}</div>
-              )}
-              {blocked && (
-                <div className="mt-1 flex items-center gap-1 text-[11px] text-slate-500">
-                  <IconBlocked className="h-3 w-3" />
-                  Unavailable
-                </div>
+                <div className="mt-1 text-xs italic text-amber-300/90">{option.risk}</div>
               )}
             </button>
           )
@@ -115,8 +132,7 @@ export default function EncounterModal({ game, onChoose, onResolved }: Encounter
 
       <p className="mt-4 flex items-center gap-2 text-[11px] text-slate-500">
         <IconBlocked className="h-3 w-3 shrink-0" />
-        Your jump is on hold until you choose. Nothing else can be done until the ship
-        lands.
+        Your jump is on hold until you choose.
       </p>
     </Modal>
   )
