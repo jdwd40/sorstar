@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { useGame } from '../context/GameContext'
 import Starfield from './Starfield'
@@ -129,6 +129,49 @@ function AccountControl() {
 }
 
 /**
+ * Credits, with the last change drifting up off the chip.
+ *
+ * Every way credits move - a trade, a delivery, upkeep, an encounter, an
+ * upgrade - shows here, so the HUD answers "what did that just cost me" without
+ * each action needing its own toast.
+ */
+function CreditsChip({ credits }: { credits: number }) {
+  const prev = useRef(credits)
+  const [delta, setDelta] = useState<{ id: number; amount: number } | null>(null)
+
+  useEffect(() => {
+    const amount = credits - prev.current
+    prev.current = credits
+    if (amount !== 0) setDelta((d) => ({ id: (d?.id ?? 0) + 1, amount }))
+  }, [credits])
+
+  return (
+    <span className="relative">
+      <StatusChip
+        label="Credits"
+        value={fmtMoney(credits)}
+        tone="text-emerald-300"
+        icon={<IconCredits className="h-3.5 w-3.5" />}
+        labelClassName="hidden md:inline"
+        title={`${fmtMoney(credits)} credits`}
+      />
+      {delta && (
+        <span
+          key={delta.id}
+          className={`credit-float num pointer-events-none absolute right-1 top-full mt-2 whitespace-nowrap text-[11px] font-bold ${
+            delta.amount > 0 ? 'text-emerald-300' : 'text-rose-300'
+          }`}
+          aria-hidden="true"
+        >
+          {delta.amount > 0 ? '+' : '-'}
+          {fmtMoney(Math.abs(delta.amount))}
+        </span>
+      )}
+    </span>
+  )
+}
+
+/**
  * The readouts worth seeing on every screen, in the order they matter while
  * playing: where the ship is, what it is worth, how full it is, and how far in.
  *
@@ -159,14 +202,7 @@ function HeadHud() {
         labelClassName="hidden md:inline"
         title={`Day ${fmt(game.day)}`}
       />
-      <StatusChip
-        label="Credits"
-        value={fmtMoney(game.credits)}
-        tone="text-emerald-300"
-        icon={<IconCredits className="h-3.5 w-3.5" />}
-        labelClassName="hidden md:inline"
-        title={`${fmtMoney(game.credits)} credits`}
-      />
+      <CreditsChip credits={game.credits} />
       <StatusChip
         label="Cargo"
         value={`${fmt(used)}/${fmt(capacity)}`}

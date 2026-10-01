@@ -15,11 +15,10 @@ import {
   COMMODITY_MAP,
   GAME_TARGET_NET_WORTH,
   PLANET_MAP,
-  cargoCapacityAtLevel,
   dailyUpkeep,
 } from '../data/gameData'
-import { cargoFree, cargoUsed, quoteBuy, quoteSell } from '../services/marketService'
-import { commodityEventScale } from '../services/marketEventService'
+import { quoteBuy, quoteSell } from '../services/marketService'
+import { commodityEventScale, eventsAt } from '../services/marketEventService'
 import { contractDests } from '../services/contractService'
 import { cargoSaleValue, goalProgress, netWorth } from '../services/gameService'
 import { fmt, fmtMoney, fmtPct } from '../utils/format'
@@ -28,6 +27,7 @@ import type { ActionResult } from '../context/GameContext'
 import type { TravelResult } from '../services/travelService'
 import type { CommodityId, GameState } from '../types/game'
 import PlanetVisual from '../components/ui/PlanetVisual'
+import { planetStyle } from '../components/ui/planetStyle'
 import GameBadge from '../components/ui/GameBadge'
 import { StatTile } from '../components/ui/StatusChip'
 import FloatingTransactions, {
@@ -39,9 +39,11 @@ import {
   IconClock,
   IconContract,
   IconLog,
+  IconScroll,
   IconShip,
   IconTrade,
   IconTravel,
+  IconWarning,
 } from '../components/ui/Icons'
 
 type Tab = 'market' | 'travel' | 'contracts' | 'ship' | 'log'
@@ -102,6 +104,7 @@ function tradeFeedback(
       kind,
       amount: -quote.cost,
       title: `Bought ${fmt(qty)} × ${commodity.name}`,
+      headline: { text: `+${fmt(qty)} ${commodity.name}`, tone: 'info' },
       lines: [
         {
           label: 'Fill price',
@@ -128,6 +131,15 @@ function tradeFeedback(
     kind,
     amount: quote.proceeds,
     title: `Sold ${fmt(qty)} × ${commodity.name}`,
+    // Only stated when the position has a real basis to compare against;
+    // without one there is no profit to report, and inventing one would be a
+    // lie about where the goods came from.
+    headline:
+      basis === undefined
+        ? undefined
+        : Math.round(realised) >= 0
+          ? { text: `+${fmtMoney(Math.abs(realised))} profit`, tone: 'good' }
+          : { text: `-${fmtMoney(-realised)} trading loss`, tone: 'bad' },
     lines: [
       {
         label: 'Fill price',
@@ -141,17 +153,8 @@ function tradeFeedback(
         ),
         tone: quote.unitPrice > listed ? 'good' : quote.unitPrice < listed ? 'bad' : 'muted',
       },
-      // Only stated when the position has a real basis to compare against;
-      // without one there is no profit to report, and inventing one would be a
-      // lie about where the goods came from.
       ...(basis !== undefined
-        ? [
-            {
-              label: 'Realised',
-              value: `${realised >= 0 ? '+' : ''}${fmtMoney(realised)} vs basis`,
-              tone: (realised >= 0 ? 'good' : 'bad') as 'good' | 'bad',
-            },
-          ]
+        ? [{ label: 'You paid', value: `${fmtMoney(basis)}/u`, tone: 'muted' as const }]
         : []),
     ],
   }
@@ -213,16 +216,14 @@ export default function GamePage() {
   if (!game) return null
 
   const planet = PLANET_MAP[game.planetId] ?? PLANET_MAP['eden']!
-  const capacity = cargoCapacityAtLevel(game.ship.cargoLevel)
-  const used = cargoUsed(game)
   const nw = netWorth(game)
   const holdValue = cargoSaleValue(game)
   const progress = goalProgress(game)
   const showVictory = game.stats.victory && !game.stats.victorySeen
-  const free = cargoFree(game)
   const upkeep = dailyUpkeep(game.ship)
   const canPayUpkeep = game.credits >= upkeep
   const dueHere = contractDests(game).get(game.planetId) ?? 0
+  const eventsHere = eventsAt(game.activeEvents, game.planetId, game.day).length
 
   const flashMessage = (message: string, kind: Flash['kind']) => {
     if (flashTimer.current) clearTimeout(flashTimer.current)
@@ -319,38 +320,51 @@ export default function GamePage() {
         )}
 
         {/* Where the ship is, what it is worth, and the only button that is
-            always worth having: let the day turn. */}
-        <section className="card p-4">
-          <div className="flex flex-wrap items-start gap-4">
-            <PlanetVisual planet={planet} size="lg" highlight="current" label={planet.name} />
-
-            <div className="min-w-0 flex-1">
-              <div className="flex flex-wrap items-center gap-2">
-                <h1 className="text-xl font-bold leading-tight text-white">{planet.name}</h1>
+            always worth having: let the day turn. Credits, cargo and the day
+            live in the sticky header, so they are not repeated here. */}
+        <section className="card relative overflow-hidden p-4">
+          <div
+            className="pointer-events-none absolute -left-20 -top-24 h-64 w-64 rounded-full"
+            style={{ background: `radial-gradient(circle, ${planetStyle(planet).rim}33, transparent 68%)` }}
+            aria-hidden="true"
+          />
+          <div className="relative grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-3 gap-y-2 sm:grid-cols-[auto_minmax(0,1fr)_auto] sm:gap-x-4">
+            <PlanetVisual
+              planet={planet}
+              size="lg"
+              highlight="current"
+              label={planet.name}
+              className="m-5 sm:row-span-2"
+            />
+            <div className="min-w-0 self-end">
+              <div className="text-[10px] font-semibold uppercase tracking-[0.2em] text-indigo-300/80">
+                Docked at
+              </div>
+              <h1 className="text-2xl font-black leading-tight tracking-wide text-white">{planet.name}</h1>
+              <div className="mt-1 flex flex-wrap items-center gap-1.5">
                 <GameBadge tone="info" title={`${planet.type} world`}>
                   <IconPlanetType type={planet.type} className="h-3 w-3" />
                   {planet.type}
                 </GameBadge>
                 {dueHere > 0 && (
-                  <GameBadge tone="contract" title="You have cargo under contract bound for here">
-                    {dueHere} delivery{dueHere > 1 ? 'ies' : ''} due here
+                  <GameBadge tone="contract" pulse title="You have cargo under contract bound for here">
+                    <IconScroll className="h-3 w-3" />
+                    {dueHere} {dueHere > 1 ? 'deliveries' : 'delivery'} due here
+                  </GameBadge>
+                )}
+                {eventsHere > 0 && (
+                  <GameBadge tone="warn" title="A market event is running here - see the Trade tab">
+                    <IconWarning className="h-3 w-3" />
+                    market alert
                   </GameBadge>
                 )}
               </div>
-              <p className="mt-0.5 text-sm text-slate-400">{planet.description}</p>
-              <p className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-500">
-                <span className="flex items-center gap-1">
-                  <IconClock className="h-3 w-3" /> Day {fmt(game.day)}
-                </span>
-                <span>Population {planet.population.toLocaleString()}</span>
-                <span>
-                  Hold <span className="num text-slate-300">{fmt(used)}</span>/
-                  <span className="num text-slate-300">{fmt(capacity)}</span>
-                </span>
-              </p>
             </div>
-
-            <div className="flex flex-col items-stretch gap-1.5 sm:items-end">
+            <p className="col-span-2 self-start text-xs text-slate-400 sm:col-span-1 sm:col-start-2 sm:text-sm">
+              {planet.description}
+              <span className="num text-slate-500"> · pop {planet.population.toLocaleString()}</span>
+            </p>
+            <div className="col-span-2 flex items-center gap-2 sm:col-span-1 sm:col-start-3 sm:row-span-2 sm:row-start-1 sm:flex-col sm:items-end">
               <button
                 onClick={() => runAction(() => waitDay(), 'wait')}
                 title={
@@ -358,93 +372,99 @@ export default function GamePage() {
                     ? undefined
                     : `Only ${game.credits} cr on hand - upkeep will be paid down to that.`
                 }
-                className="btn-primary btn-sm flex items-center justify-center gap-1.5"
+                className="btn-ghost btn-sm flex flex-1 items-center justify-center gap-1.5 py-2 sm:flex-none"
               >
                 <IconClock className="h-3.5 w-3.5" />
                 Wait one day
               </button>
               <span
-                className={`text-center text-[10px] ${canPayUpkeep ? 'text-slate-500' : 'text-amber-300'}`}
+                className={`num shrink-0 text-[10px] ${canPayUpkeep ? 'text-slate-500' : 'text-amber-300'}`}
               >
                 {fmtMoney(upkeep)} upkeep{canPayUpkeep ? '' : ', partial'}
               </span>
             </div>
           </div>
 
-          <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
-            <StatTile label="Credits" value={fmtMoney(game.credits)} tone="text-emerald-300" />
-            <StatTile
-              label="Cargo"
-              value={`${fmt(used)}/${fmt(capacity)}`}
-              tone={free === 0 ? 'text-rose-300' : 'text-white'}
-              hint={`${fmt(capacity - used)} bays free`}
-            />
-            <StatTile
-              label="Net worth"
-              value={fmtMoney(nw)}
-              tone="text-indigo-200"
-              hint={`of ${fmtMoney(GAME_TARGET_NET_WORTH)} goal`}
-            />
+          <div className="relative mt-3 grid grid-cols-[minmax(0,1fr)_auto] gap-2">
+            <div className="stat-tile text-left">
+              <div className="flex items-baseline justify-between gap-2 text-[10px] uppercase tracking-wide text-slate-400">
+                <span>Net worth</span>
+                <span className={`whitespace-nowrap ${progress >= 1 ? 'font-bold text-emerald-300' : 'num'}`}>
+                  {progress >= 1 ? (
+                    'Trailblazer achieved!'
+                  ) : (
+                    <>
+                      <span className="font-semibold text-indigo-200">{fmtPct(progress)}</span> of{' '}
+                      {fmtMoney(GAME_TARGET_NET_WORTH)}
+                    </>
+                  )}
+                </span>
+              </div>
+              <div className="num text-xl font-bold leading-tight text-indigo-100 text-glow">
+                {fmtMoney(nw)}
+              </div>
+              <div
+                className="meter mt-1.5 h-2"
+                role="progressbar"
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={Math.round(progress * 100)}
+                aria-label="Progress toward the trailblazer goal"
+              >
+                <div
+                  className={`meter-fill bg-gradient-to-r ${
+                    progress >= 1 ? 'from-emerald-400 to-cyan-300' : 'from-indigo-500 via-violet-400 to-cyan-300'
+                  }`}
+                  style={{ width: `${Math.max(1, Math.min(100, progress * 100))}%` }}
+                />
+              </div>
+            </div>
             {/* Net worth counts cargo at cost, so this market figure is
                 informational only and is labelled to say so. */}
             <StatTile
               label="Hold sells for"
               value={fmtMoney(holdValue)}
-              tone="text-slate-200"
-              hint="here, if dumped today"
+              tone="text-cyan-100"
+              hint="here, today"
             />
-          </div>
-
-          <div className="mt-3">
-            <div className="mb-1 flex justify-between text-[11px] text-slate-400">
-              <span>
-                Goal: net worth of{' '}
-                <span className="num text-white">{fmtMoney(GAME_TARGET_NET_WORTH)}</span>
-              </span>
-              <span className={progress >= 1 ? 'font-bold text-emerald-300' : 'num'}>
-                {progress >= 1 ? 'TRAILBLAZER ACHIEVED!' : fmtPct(progress)}
-              </span>
-            </div>
-            <div
-              className="meter"
-              role="progressbar"
-              aria-valuemin={0}
-              aria-valuemax={100}
-              aria-valuenow={Math.round(progress * 100)}
-              aria-label="Progress toward the trailblazer goal"
-            >
-              <div
-                className={`meter-fill bg-gradient-to-r ${
-                  progress >= 1 ? 'from-emerald-400 to-cyan-300' : 'from-indigo-500 to-cyan-300'
-                }`}
-                style={{ width: `${Math.min(100, progress * 100)}%` }}
-              />
-            </div>
           </div>
         </section>
 
-        <nav className="-mx-4 overflow-x-auto px-4 sm:mx-0 sm:px-0">
-          <div className="flex min-w-max gap-1 border-b border-slate-700/70 pb-2">
-            {TABS.map((t) => {
-              const Icon = t.icon
-              const on = tab === t.id
-              return (
-                <button
-                  key={t.id}
-                  onClick={() => setTab(t.id)}
-                  aria-current={on ? 'page' : undefined}
-                  className={`flex items-center gap-2 rounded-t-lg border-b-2 px-3 py-2 text-sm font-semibold transition-colors ${
-                    on
-                      ? 'border-indigo-400 bg-slate-800/70 text-white'
-                      : 'border-transparent text-slate-400 hover:text-white'
-                  }`}
-                >
-                  <Icon className={`h-4 w-4 ${on ? 'text-indigo-300' : ''}`} />
-                  {t.label}
-                </button>
-              )
-            })}
-          </div>
+        <nav
+          className="grid grid-cols-5 gap-1 rounded-xl border border-slate-700/60 bg-slate-950/60 p-1 backdrop-blur-sm sm:flex sm:w-fit"
+          aria-label="Game sections"
+        >
+          {TABS.map((t) => {
+            const Icon = t.icon
+            const on = tab === t.id
+            // A dot for "something here wants you": a delivery to hand over, or
+            // an event moving prices on this market.
+            const dot =
+              (t.id === 'contracts' && dueHere > 0) || (t.id === 'market' && eventsHere > 0)
+            return (
+              <button
+                key={t.id}
+                onClick={() => setTab(t.id)}
+                aria-current={on ? 'page' : undefined}
+                className={`relative flex min-h-11 flex-col items-center justify-center gap-0.5 rounded-lg px-1 text-[11px] font-semibold transition-colors sm:flex-row sm:gap-2 sm:px-4 sm:text-sm ${
+                  on
+                    ? 'bg-gradient-to-b from-indigo-500/35 to-indigo-600/15 text-white shadow-[inset_0_0_0_1px_rgba(129,140,248,0.5),0_0_18px_-6px_rgba(99,102,241,0.9)]'
+                    : 'text-slate-400 hover:bg-slate-800/60 hover:text-white'
+                }`}
+              >
+                <Icon className={`h-4 w-4 ${on ? 'text-indigo-200' : ''}`} />
+                {t.label}
+                {dot && (
+                  <span
+                    className={`absolute right-1.5 top-1.5 h-2 w-2 rounded-full ${
+                      t.id === 'contracts' ? 'bg-violet-400' : 'bg-amber-400'
+                    } shadow-[0_0_8px_currentColor]`}
+                    aria-hidden="true"
+                  />
+                )}
+              </button>
+            )
+          })}
         </nav>
 
         {tab === 'market' && (

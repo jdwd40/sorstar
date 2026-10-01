@@ -202,6 +202,16 @@ export function IconUser(props: IconProps) {
   )
 }
 
+/** A market event's push on a price: a rising line for scarcity, falling for a glut. */
+export function IconSurge({ down = false, ...props }: IconProps & { down?: boolean }) {
+  return (
+    <Svg {...props}>
+      <path d={down ? 'M3 7l6 6 4-4 8 8' : 'M3 17l6-6 4 4 8-8'} />
+      <path d={down ? 'M15 17h6v-6' : 'M15 7h6v6'} />
+    </Svg>
+  )
+}
+
 /** The wordmark glyph: a world with a freighter in orbit of it. */
 export function IconMark(props: IconProps) {
   return (

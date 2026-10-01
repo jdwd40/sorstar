@@ -2,6 +2,8 @@ import { useEffect, useRef, type ReactNode } from 'react'
 import { fmtMoney } from '../../utils/format'
 import { IconCheck, IconTrade } from './Icons'
 
+type Tone = 'good' | 'bad' | 'muted' | 'info'
+
 export interface TransactionFeedback {
   id: number
   kind: 'buy' | 'sell'
@@ -9,14 +11,18 @@ export interface TransactionFeedback {
   title: string
   /** Signed credits that moved: negative on a purchase. */
   amount: number
-  /** One line each, e.g. the units gained, the profit realised. */
-  lines: { label: string; value: ReactNode; tone?: 'good' | 'bad' | 'muted' }[]
+  /** The second number a trader wants: "+8 Medicine", "+210 cr profit". */
+  headline?: { text: string; tone: Tone }
+  /** Small print under it, e.g. the fill price. */
+  lines: { label: string; value: ReactNode; tone?: Tone }[]
 }
 
-const LINE_TONE: Record<'good' | 'bad' | 'muted', string> = {
+// A loss is amber rather than red: worth noticing, not an alarm.
+const LINE_TONE: Record<Tone, string> = {
   good: 'text-emerald-300',
-  bad: 'text-rose-300',
+  bad: 'text-amber-300',
   muted: 'text-slate-300',
+  info: 'text-cyan-200',
 }
 
 interface FloatingTransactionProps {
@@ -27,15 +33,11 @@ interface FloatingTransactionProps {
 /**
  * The answer to a trade, in the two numbers the player actually asked for.
  *
- * A purchase used to report "Purchase complete." and a sale "Sale complete." -
- * both true, both useless, while the interesting figures (what it cost, what it
- * made, what the profit over basis was) were one re-read of the table away. This
- * puts them in front of the player for a moment and then gets out of the way:
- * one animation cycle, at most three at a time so a fast trader sees every
+ * One animation cycle, at most three at a time so a fast trader sees every
  * receipt, and nothing left behind to re-read.
  */
 function FloatingTransaction({ feedback, onExpire }: FloatingTransactionProps) {
-  const { id, kind, title, amount, lines } = feedback
+  const { id, kind, title, amount, headline, lines } = feedback
 
   // The page hands over a fresh closure every render, so keeping it out of the
   // timer means a trade, a tab switch or anything else re-rendering the page
@@ -52,7 +54,7 @@ function FloatingTransaction({ feedback, onExpire }: FloatingTransactionProps) {
 
   return (
     <div
-      className={`transaction-in pointer-events-none w-[min(20rem,calc(100vw-2rem))] rounded-xl border p-3 shadow-2xl backdrop-blur-md ${
+      className={`transaction-in pointer-events-none w-[min(19rem,calc(100vw-2rem))] overflow-hidden rounded-2xl border p-3 shadow-2xl backdrop-blur-md ${
         buy
           ? 'border-indigo-400/40 bg-slate-950/90 shadow-indigo-950/60'
           : 'border-emerald-400/40 bg-slate-950/90 shadow-emerald-950/60'
@@ -71,16 +73,23 @@ function FloatingTransaction({ feedback, onExpire }: FloatingTransactionProps) {
           {title}
         </span>
       </div>
-      <div
-        className={`num mt-1 text-2xl font-black leading-none ${
-          buy ? 'text-indigo-200 text-glow' : 'text-emerald-300 text-glow'
-        }`}
-      >
-        {amount >= 0 ? '+' : ''}
-        {fmtMoney(amount)}
+      <div className="mt-1.5 flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
+        <span
+          className={`num text-2xl font-black leading-none text-glow ${
+            buy ? 'text-indigo-100' : 'text-emerald-300'
+          }`}
+        >
+          {amount >= 0 ? '+' : ''}
+          {fmtMoney(amount)}
+        </span>
+        {headline && (
+          <span className={`num text-base font-bold leading-none ${LINE_TONE[headline.tone]}`}>
+            {headline.text}
+          </span>
+        )}
       </div>
       {lines.length > 0 && (
-        <div className="mt-1.5 space-y-0.5">
+        <div className="mt-2 space-y-0.5 border-t border-slate-700/50 pt-1.5">
           {lines.map((line) => (
             <div
               key={line.label}

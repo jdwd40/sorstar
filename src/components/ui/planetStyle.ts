@@ -180,7 +180,7 @@ export function textureLayers(style: PlanetStyle): string[] {
       return [
         `repeating-linear-gradient(90deg, ${d}1f 0 1px, transparent 1px 16%)`,
         `repeating-linear-gradient(0deg, ${d}1f 0 1px, transparent 1px 16%)`,
-        `radial-gradient(circle 30% 30% at 50% 50%, ${d}26 0%, transparent 75%)`,
+        `radial-gradient(ellipse 30% 30% at 50% 50%, ${d}26 0%, transparent 75%)`,
       ]
     case 'city':
       return [

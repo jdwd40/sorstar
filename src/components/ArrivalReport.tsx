@@ -1,14 +1,17 @@
 import { useMemo } from 'react'
 import type { GameState } from '../types/game'
-import { PLANET_MAP } from '../data/gameData'
+import { COMMODITY_MAP, PLANET_MAP } from '../data/gameData'
 import { carriedGoods } from '../services/gameService'
 import { getTradeLeads } from '../services/intelService'
+import { activeContracts } from '../services/contractService'
 import { fmt, fmtMoney } from '../utils/format'
 import Modal from './Modal'
 import PlanetVisual from './ui/PlanetVisual'
+import { planetStyle } from './ui/planetStyle'
 import GameBadge from './ui/GameBadge'
+import MarketAlert from './ui/MarketAlert'
 import { StatTile } from './ui/StatusChip'
-import { IconCheck, IconPlanetType, IconTravel } from './ui/Icons'
+import { IconCheck, IconPlanetType, IconScroll, IconWarning } from './ui/Icons'
 import type { TravelResult } from '../services/travelService'
 
 interface ArrivalReportProps {
@@ -30,84 +33,145 @@ interface ArrivalReportProps {
  * apart on screen. Whatever the player was looking at when the jump began, this
  * is what they are shown when the ship docks.
  *
- * It answers, in order: where am I, what did the trip cost, what have I got,
- * and what is worth doing now. The world gets a real identity in the header -
- * this is the one screen where the destination is genuinely new information.
+ * It answers, in order: where am I, what did the trip cost, what happened on the
+ * way, what is my hold worth here, what is going on in this market, and which of
+ * my contracts can I hand over. Everything below the header is shown only when
+ * it has something to say.
  */
 export default function ArrivalReport({ game, info, note, onClose }: ArrivalReportProps) {
   const dest = PLANET_MAP[info.toId ?? game.planetId]
-  const goods = useMemo(() => carriedGoods(game).slice(0, 5), [game])
+  const goods = useMemo(() => carriedGoods(game), [game])
   const leads = useMemo(
     () => (game.ship.navLevel >= 1 ? getTradeLeads(game).slice(0, 3) : []),
     [game],
   )
   const holdValue = goods.reduce((sum, good) => sum + good.sellsFor, 0)
+  const holdProfit = goods.reduce((sum, good) => sum + good.sellsFor - good.breakEven, 0)
+  const deliveries = activeContracts(game).filter((c) => c.destinationPlanetId === dest?.id)
+  const rim = planetStyle(dest).rim
 
   return (
     <Modal onClose={onClose} labelledBy="arrival-title">
-      <div className="mb-4 flex items-center gap-4">
-        <PlanetVisual planet={dest} size="xl" label={dest?.name} />
-        <div className="min-w-0">
-          <h2 id="arrival-title" className="flex flex-wrap items-center gap-2 text-xl font-bold text-white">
-            Arrived at {dest?.name}
-            {dest && (
-              <GameBadge tone="info" title={`${dest.type} world`}>
-                <IconPlanetType type={dest.type} className="h-3 w-3" />
-                {dest.type}
-              </GameBadge>
-            )}
-          </h2>
-          {dest && <p className="mt-0.5 text-sm text-slate-400">{dest.description}</p>}
-          <p className="num mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500">
-            <span className="flex items-center gap-1">
-              <IconTravel className="h-3 w-3" />
-              {fmt(info.distanceLy ?? 0)} ly
-            </span>
-            <span>{fmtMoney(info.fuelCost ?? 0)} fuel</span>
-            <span>day {fmt(info.arriveDay ?? game.day)}</span>
-            {dest && <span>pop {dest.population.toLocaleString()}</span>}
-          </p>
+      {/* The world, big, with its own light behind it. */}
+      <div className="relative -mx-6 -mt-6 mb-4 overflow-hidden px-6 pb-2 pt-6 text-center">
+        <div
+          className="pointer-events-none absolute inset-0"
+          style={{
+            background: `radial-gradient(ellipse 70% 80% at 50% 40%, ${rim}33 0%, transparent 70%)`,
+          }}
+          aria-hidden="true"
+        />
+        <PlanetVisual planet={dest} size="xl" label={dest?.name} className="relative my-2" />
+        <div className="relative mt-2 text-[10px] font-semibold uppercase tracking-[0.3em] text-indigo-300/90">
+          Arrived
         </div>
+        <h2 id="arrival-title" className="relative text-2xl font-black tracking-wide text-white">
+          {dest?.name}
+        </h2>
+        {dest && (
+          <div className="relative mt-1 flex justify-center">
+            <GameBadge tone="info" title={`${dest.type} world`}>
+              <IconPlanetType type={dest.type} className="h-3 w-3" />
+              {dest.type}
+            </GameBadge>
+          </div>
+        )}
+      </div>
+
+      <div className="mb-4 grid grid-cols-3 gap-2">
+        <StatTile
+          label="Flight"
+          value={`${fmt(info.days ?? info.distanceLy ?? 0)} d`}
+          hint={`${fmt(info.distanceLy ?? 0)} ly`}
+        />
+        <StatTile label="Fuel" value={fmtMoney(info.fuelCost ?? 0)} tone="text-amber-200" />
+        <StatTile label="Day" value={fmt(info.arriveDay ?? game.day)} />
       </div>
 
       {note && (
-        <div className="mb-4 flex items-start gap-2 rounded-lg border border-amber-400/30 bg-amber-500/10 p-3 text-sm text-amber-100">
-          <IconCheck className="mt-0.5 h-4 w-4 shrink-0" />
-          {note}
+        <div className="mb-4 flex items-start gap-2.5 rounded-lg border border-amber-400/30 bg-amber-500/10 p-3 text-sm text-amber-100">
+          <IconWarning className="mt-0.5 h-4 w-4 shrink-0 text-amber-300" />
+          <div>
+            <div className="text-[10px] font-semibold uppercase tracking-wider text-amber-300/90">
+              In transit
+            </div>
+            {note}
+          </div>
         </div>
       )}
 
+      {deliveries.length > 0 && (
+        <div className="mb-4 space-y-1.5">
+          {deliveries.map((contract) => {
+            const short = Math.max(0, contract.quantity - (game.cargo[contract.commodityId] ?? 0))
+            const commodity = COMMODITY_MAP[contract.commodityId]
+            return (
+              <div
+                key={contract.id}
+                className={`flex items-center justify-between gap-3 rounded-lg border px-3 py-2 text-sm ${
+                  short === 0
+                    ? 'ready-glow border-emerald-400/40 bg-emerald-500/10 text-emerald-100'
+                    : 'border-violet-400/30 bg-violet-500/10 text-violet-100'
+                }`}
+              >
+                <span className="flex min-w-0 items-center gap-2">
+                  {short === 0 ? (
+                    <IconCheck className="h-4 w-4 shrink-0 text-emerald-300" />
+                  ) : (
+                    <IconScroll className="h-4 w-4 shrink-0 text-violet-300" />
+                  )}
+                  <span className="truncate">
+                    {short === 0 ? 'Delivery ready' : `${fmt(short)} short`} ·{' '}
+                    <span aria-hidden="true">{commodity?.icon}</span> {fmt(contract.quantity)}{' '}
+                    {commodity?.name}
+                  </span>
+                </span>
+                <span className="num shrink-0 font-bold">{fmtMoney(contract.reward)}</span>
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      <MarketAlert game={game} planet={dest ?? PLANET_MAP[game.planetId]} className="mb-4" />
+
       {goods.length > 0 && (
         <div className="mb-4">
-          <h3
-            className="panel-heading mb-2"
+          <div
+            className="mb-2 flex items-baseline justify-between gap-3"
             title="What the Trade tab would credit you for each line if you sold it here now - the market absorbs your order as you sell, so this sits below Qty x listed price."
           >
-            Your hold if sold here ·{' '}
-            <span className="num text-slate-300">{fmtMoney(holdValue)}</span>
-          </h3>
+            <h3 className="panel-heading">Your hold sells here for</h3>
+            <span className="num text-right">
+              <span className="text-lg font-bold text-cyan-100">{fmtMoney(holdValue)}</span>{' '}
+              <span
+                className={`text-sm font-semibold ${holdProfit >= 0 ? 'text-emerald-300' : 'text-amber-300'}`}
+              >
+                {holdProfit >= 0 ? '+' : '-'}
+                {fmtMoney(Math.abs(holdProfit))}
+              </span>
+            </span>
+          </div>
           <div className="space-y-1">
-            {goods.map(({ commodity, qty, costBasis, sellsFor }) => {
+            {goods.slice(0, 5).map(({ commodity, qty, costBasis, sellsFor }) => {
               const perUnit = sellsFor / qty - costBasis
               return (
                 <div
                   key={commodity.id}
-                  className="row row-hover flex items-center justify-between gap-3 rounded px-2 py-1.5 text-sm"
+                  className="flex items-center justify-between gap-3 rounded-lg bg-slate-900/50 px-2.5 py-1.5 text-sm"
                 >
                   <span className="text-white">
                     <span aria-hidden="true">{commodity.icon}</span> {commodity.name}
                     <span className="num text-slate-500"> ×{fmt(qty)}</span>
                   </span>
-                  <span className="text-right">
+                  <span className="num text-right">
                     <span
-                      className={`num block font-semibold ${
-                        perUnit >= 0 ? 'text-emerald-300' : 'text-rose-300'
-                      }`}
+                      className={`font-semibold ${perUnit >= 0 ? 'text-emerald-300' : 'text-amber-300'}`}
                     >
-                      {perUnit >= 0 ? '+' : ''}
-                      {fmtMoney(perUnit)}/unit
+                      {perUnit >= 0 ? '+' : '-'}
+                      {fmtMoney(Math.abs(perUnit))}/u
                     </span>
-                    <span className="num block text-[10px] text-slate-500">{fmtMoney(sellsFor)}</span>
+                    <span className="ml-2 text-[11px] text-slate-500">{fmtMoney(sellsFor)}</span>
                   </span>
                 </div>
               )
@@ -133,8 +197,8 @@ export default function ArrivalReport({ game, info, note, onClose }: ArrivalRepo
         </div>
       )}
 
-      <button onClick={onClose} className="btn-primary w-full">
-        Dock &amp; look around
+      <button onClick={onClose} className="btn-primary w-full py-2.5">
+        Dock &amp; trade
       </button>
     </Modal>
   )

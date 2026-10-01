@@ -99,18 +99,26 @@ export default function PlanetVisual({
         style={{
           backgroundImage: [
             ...textureLayers(style),
-            `radial-gradient(circle at 32% 27%, ${core} 0%, ${shade} 38%, ${night} 80%, ${night} 100%)`,
+            // The lit hemisphere runs well past the middle so a small world still
+            // reads as its colour rather than as a dark disc with a highlight.
+            `radial-gradient(circle at 32% 27%, ${core} 0%, ${shade} 50%, ${night} 90%, ${night} 100%)`,
           ].join(', '),
-          boxShadow: `0 0 ${Math.max(4, Math.round(px * 0.16))}px ${rim}4d, inset -2px -3px 6px rgba(0,0,0,0.5)`,
+          boxShadow: `0 0 ${Math.max(5, Math.round(px * 0.22))}px ${rim}59, inset -2px -3px 6px rgba(0,0,0,0.5)`,
         }}
       >
-        {/* Terminator and limb light, over the texture. */}
+        {/* Gloss, terminator and a rim of atmosphere lit from the sun side. */}
         <span
           className="absolute inset-0 rounded-full"
           style={{
-            background:
-              'radial-gradient(circle at 30% 24%, rgba(255,255,255,0.22) 0%, rgba(255,255,255,0) 38%), radial-gradient(circle at 62% 70%, rgba(0,0,0,0.42) 0%, rgba(0,0,0,0) 62%)',
-            boxShadow: `inset 0 0 ${Math.max(2, Math.round(px * 0.06))}px ${rim}80`,
+            background: [
+              'radial-gradient(ellipse 30% 20% at 34% 24%, rgba(255,255,255,0.42) 0%, rgba(255,255,255,0) 70%)',
+              'radial-gradient(circle at 30% 24%, rgba(255,255,255,0.18) 0%, rgba(255,255,255,0) 42%)',
+              'radial-gradient(circle at 66% 72%, rgba(0,0,0,0.4) 0%, rgba(0,0,0,0) 60%)',
+            ].join(', '),
+            boxShadow: [
+              `inset ${Math.max(1, Math.round(px * 0.04))}px ${Math.max(1, Math.round(px * 0.04))}px ${Math.max(2, Math.round(px * 0.08))}px ${rim}99`,
+              `inset 0 0 ${Math.max(2, Math.round(px * 0.06))}px ${rim}66`,
+            ].join(', '),
           }}
         />
       </span>

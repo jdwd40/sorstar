@@ -175,13 +175,20 @@ export default function TravelPanel({ game, travel, onArrival }: TravelPanelProp
         )}
 
         <div className="table-wrap mt-4 -mx-4 px-4 sm:mx-0 sm:px-0">
-          <table className="w-full min-w-[34rem] text-sm">
+          <table className="w-full text-sm sm:min-w-[34rem]">
             <thead>
               <tr className="table-head">
                 <th className="th">Destination</th>
-                <th className="th text-right">Distance</th>
-                <th className="th text-right">Fuel cost</th>
-                <th className="th text-right">Action</th>
+                <th className="th text-right">
+                  <span className="sm:hidden">Dist</span>
+                  <span className="hidden sm:inline">Distance</span>
+                </th>
+                <th className="th text-right">
+                  Fuel<span className="hidden sm:inline"> cost</span>
+                </th>
+                <th className="th text-right">
+                  <span className="sr-only sm:not-sr-only">Action</span>
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -191,11 +198,11 @@ export default function TravelPanel({ game, travel, onArrival }: TravelPanelProp
                   <tr key={planet.id} className="row row-hover">
                     <td className="td">
                       <div className="flex items-center gap-2">
-                        <PlanetVisual planet={planet} size="xs" />
+                        <PlanetVisual planet={planet} size="sm" className="m-0.5" />
                         <div className="min-w-0">
                           <div className="flex flex-wrap items-center gap-1.5">
                             <span className="font-medium text-white">{planet.name}</span>
-                            <span className="flex items-center gap-1 text-[10px] uppercase tracking-wide text-slate-500">
+                            <span className="hidden items-center gap-1 text-[10px] uppercase tracking-wide text-slate-500 sm:flex">
                               <IconPlanetType type={planet.type} className="h-3 w-3" />
                               {planet.type}
                             </span>
@@ -220,8 +227,8 @@ export default function TravelPanel({ game, travel, onArrival }: TravelPanelProp
                         </div>
                       </div>
                     </td>
-                    <td className="td num text-right text-slate-300">{fmt(ly)} ly</td>
-                    <td className="td num text-right font-semibold text-white">{fmtMoney(cost)}</td>
+                    <td className="td num whitespace-nowrap text-right text-slate-300">{fmt(ly)} ly</td>
+                    <td className="td num whitespace-nowrap text-right font-semibold text-white">{fmtMoney(cost)}</td>
                     <td className="td text-right">
                       <button
                         onClick={() => requestTravel(planet)}

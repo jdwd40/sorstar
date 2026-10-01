@@ -15,12 +15,19 @@ import { fmt, fmtMoney } from '../utils/format'
 import type { ActionResult } from '../context/GameContext'
 import { StatTile } from './ui/StatusChip'
 import GameBadge from './ui/GameBadge'
-import { IconShip } from './ui/Icons'
+import { IconCargo, IconShip, IconTravel } from './ui/Icons'
 
 interface ShipPanelProps {
   game: GameState
   travelUpgrade: (type: ShipUpgradeType) => ActionResult
   resetGame: () => void
+}
+
+// Drawn rather than typed, so the three cards line up on every platform.
+const UPGRADE_ICON: Record<ShipUpgradeType, typeof IconShip> = {
+  cargo: IconCargo,
+  engine: IconShip,
+  nav: IconTravel,
 }
 
 /** How many tiers the ladder has, so the card can show progress along it. */
@@ -51,6 +58,7 @@ function UpgradeCard({
   const level =
     type === 'cargo' ? game.ship.cargoLevel : type === 'engine' ? game.ship.engineLevel : game.ship.navLevel
   const tiers = tierCount(type)
+  const Icon = UPGRADE_ICON[type]
 
   let current: string
   let next: string
@@ -73,8 +81,8 @@ function UpgradeCard({
     <div className="card space-y-3 p-4">
       <div className="flex items-start justify-between gap-3">
         <div className="flex items-center gap-3">
-          <span className="text-2xl" aria-hidden="true">
-            {meta.icon}
+          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-indigo-400/30 bg-indigo-500/10 text-indigo-200 shadow-[0_0_18px_-8px_rgba(129,140,248,0.9)]">
+            <Icon className="h-5 w-5" />
           </span>
           <div>
             <h3 className="font-bold text-white">{meta.name}</h3>
@@ -115,7 +123,7 @@ function UpgradeCard({
                 ? `${meta.name} costs ${fmtMoney(cost)}`
                 : `Need ${fmtMoney(cost)} credits`
           }
-          className={`btn-primary btn-sm ${maxed ? '!bg-slate-700 !text-slate-300' : ''}`}
+          className={`btn-sm ${maxed ? 'btn-ghost' : affordable ? 'btn-primary' : 'btn-ghost'}`}
         >
           {maxed ? 'Maxed' : `Upgrade · ${fmtMoney(cost)}`}
         </button>
@@ -221,7 +229,7 @@ export default function ShipPanel({ game, travelUpgrade, resetGame }: ShipPanelP
                 {holdProfit >= 0 ? '+' : ''}
                 {fmtMoney(holdProfit)}
               </span>
-              <span className="text-xs text-slate-500">vs what you paid</span>
+              <span className="ml-1 text-xs text-slate-500">vs what you paid</span>
             </div>
           )}
         </div>
