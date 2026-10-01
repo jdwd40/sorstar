@@ -89,7 +89,7 @@ export function cargoSaleValue(state: GameState): number {
  * goal is meant to measure. `saleValue` still reports the live figure, as
  * information rather than as an achievement.
  */
-export function cargoEquity(state: GameState): number {
+function cargoEquity(state: GameState): number {
   let total = 0
   for (const commodity of COMMODITIES) {
     const qty = state.cargo[commodity.id]

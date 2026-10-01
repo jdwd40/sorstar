@@ -17,10 +17,10 @@ export const STARTING_PLANET = 'eden'
 export const SAVE_KEY = 'sorstar.save.v2'
 export const LOG_LIMIT = 80
 
-// See `dailyUpkeep`. Kept as named constants so the balance is tunable in one
-// place and the verify script can assert the cap.
+// See `dailyUpkeep`. The cap is exported so the verify script can assert it;
+// the nav multiplier is not, because nothing outside this file reads it.
 export const UPKEEP_BASE = 1
-export const UPKEEP_NAV_MULTIPLIER = 2
+const UPKEEP_NAV_MULTIPLIER = 2
 export const UPKEEP_MAX = 13
 
 export const COMMODITIES: Commodity[] = [

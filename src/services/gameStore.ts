@@ -100,7 +100,7 @@ export interface GameStore {
   readonly auth: AuthStore | null
 }
 
-export class LocalStorageGameStore implements GameStore {
+class LocalStorageGameStore implements GameStore {
   onExternalChange?: () => void
 
   constructor(private readonly key: string = SAVE_KEY) {

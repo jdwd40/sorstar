@@ -6,6 +6,7 @@ import { carriedGoods, createNewGame, netWorth } from '../src/services/gameServi
 import {
   advanceDay,
   buyCommodity,
+  cargoBasisAt,
   quoteBuy,
   priceDirection,
   quoteSell,
@@ -335,6 +336,42 @@ if (buy7.error) {
   )
 }
 
+// 8d. One cost-basis fallback, read the same way everywhere. `migrate` drops a
+//     cost-basis entry it cannot read, so the fallback is reachable from a
+//     repaired save - and it used to have three answers to the same missing
+//     datum: net worth used the commodity's base price while the hold table and
+//     the sale itself used the local market price. Net worth could therefore
+//     disagree with the very sale it was measuring.
+{
+  const basisless = {
+    ...createNewGame(),
+    cargo: { ...emptyCargo(), food: 10 },
+    costBasis: {},
+  } as GameState
+  const basis = basisless.markets[basisless.planetId].food.price
+  check(
+    cargoBasisAt(basisless, 'food') === basis,
+    `a missing cost basis falls back to the local market price (got ${cargoBasisAt(basisless, 'food')}, market ${basis})`,
+  )
+  // The three read sites must agree, which is the whole point of the helper.
+  const line = carriedGoods(basisless).find((g) => g.commodity.id === 'food')
+  check(
+    !!line && line.costBasis === basis,
+    `the hold table reads the same fallback net worth does (got ${line?.costBasis})`,
+  )
+  check(
+    netWorth(basisless) === basisless.credits + 10 * basis,
+    `net worth marks the missing-basis load at the same number (got ${netWorth(basisless)})`,
+  )
+  // And that number is what the sale is then measured against, so a load with
+  // no recorded basis cannot book a profit just by being sold.
+  const dumped = sellCommodity(basisless, 'food', 10)
+  check(
+    !dumped.error && Math.abs(dumped.state.stats.tradingProfit - (dumped.state.credits - basisless.credits - 10 * basis)) < 1e-6,
+    `the sale measures against the same basis (${!dumped.error ? dumped.state.stats.tradingProfit : 'n/a'})`,
+  )
+}
+
 // 9. waiting a day and re-buying cannot farm net worth. This was worth ~4k cr
 //    over 40 iterations when cargo was marked to the live local price.
 let s8 = createNewGame()
@@ -577,6 +614,16 @@ const throwsWith = (over: Record<string, unknown>, fragment: string) => {
   }
 }
 
+/** Exact-message variant: a substring match can hide a doubled field path. */
+const throwsWithExactly = (over: Record<string, unknown>, message: string) => {
+  try {
+    migrate(asSave(over))
+    return false
+  } catch (e) {
+    return e instanceof Error && e.message === message
+  }
+}
+
 const withoutBasis = { ...createNewGame() } as Partial<GameState>
 delete withoutBasis.costBasis
 const basisBackfilled = migrate(withoutBasis as GameState)
@@ -666,12 +713,8 @@ check(
         `cargo Lv${res.state.ship.cargoLevel} reports "${to} units (+${to - from})" (got ${JSON.stringify(res.upgradeDetail)})`,
       )
       check(
-        !/\(\+\d+ units\)$/.test(line) || line.includes(`(${to - from})`),
+        line === `Installed Cargo Hold Lv${res.state.ship.cargoLevel} — ${to} units (+${to - from}).`,
         `the cargo log line states the increment, not the total: ${line}`,
-      )
-      check(
-        !line.includes(`(+${to} units)`),
-        `the cargo log line never claims the new total as the addition (${line})`,
       )
     }
     if (type === 'engine') {
@@ -755,6 +798,16 @@ check(
   check(
     throwsWith({ version: 2, stats: { ...createNewGame().stats, totalProfit: NaN } }, 'stats.totalProfit'),
     'an unreadable legacy total is reported, not quietly zeroed',
+  )
+  // Substring matching hid a doubled prefix here: "stats.stats.totalProfit"
+  // contains "stats.totalProfit", so the check above passed against the very
+  // typo it was meant to catch. Anchor on the whole field path.
+  check(
+    throwsWithExactly(
+      { version: 2, stats: { ...createNewGame().stats, totalProfit: NaN } },
+      'Corrupt save: stats.totalProfit (legacy tradingProfit) must be a number',
+    ),
+    'the legacy field is named once, not stats.stats.totalProfit',
   )
 }
 

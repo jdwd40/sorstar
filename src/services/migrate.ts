@@ -165,11 +165,7 @@ export function migrate(raw: GameState): GameState {
         ...state,
         stats: {
           ...(kept as unknown as Stats),
-          tradingProfit: statOr(
-            legacyProfit as number,
-            0,
-            'stats.totalProfit (legacy tradingProfit)',
-          ),
+          tradingProfit: statOr(legacyProfit as number, 0, 'totalProfit (legacy tradingProfit)'),
         },
       }
     } else if (!('tradingProfit' in legacy)) {
