@@ -12,6 +12,7 @@ import {
   quoteSell,
   saleValue,
   sellCommodity,
+  waitDay,
 } from '../src/services/marketService'
 import { getTradeLeads } from '../src/services/intelService'
 import { travel } from '../src/services/travelService'
@@ -503,12 +504,11 @@ check(
 // 12. waiting charges exactly one day of upkeep and advances the clock.
 let s10 = createNewGame()
 s10 = { ...s10, credits: 5000 }
-// Mirrors GameContext.waitDay: advance the day, then bill upkeep clamped to
-// the credits actually on hand.
-const waitOnce = (s: GameState) => ({
-  ...advanceDay(s),
-  credits: s.credits - Math.min(dailyUpkeep(s.ship), s.credits),
-})
+// The real service, not a copy of it. This block used to re-implement the
+// rule inline, so every check below passed even after the clamp was deleted
+// from the component that actually ran it - a mirror cannot detect a change
+// in the thing it mirrors. `waitDay` is what `GameContext` calls.
+const waitOnce = (s: GameState) => waitDay(s).state
 const beforeWait = { day: s10.day, credits: s10.credits }
 const afterWait = waitOnce(s10)
 check(afterWait.day === beforeWait.day + 1, 'wait advances the day')

@@ -6,7 +6,7 @@ import type {
   Markets,
   Planet,
 } from '../types/game'
-import { COMMODITY_MAP, PLANET_MAP, cargoCapacityAtLevel } from '../data/gameData'
+import { COMMODITY_MAP, PLANET_MAP, cargoCapacityAtLevel, dailyUpkeep } from '../data/gameData'
 
 function hashString(str: string): number {
   let hash = 2166136261
@@ -512,6 +512,30 @@ export function advanceDay(state: GameState): GameState {
     nextMarkets[planetId] = nextRecord
   }
   return { ...state, day, markets: nextMarkets }
+}
+
+/**
+ * A day the player waits at a planet: markets re-price and upkeep is charged.
+ *
+ * The clamp is the whole point. Refusing the wait when the player cannot pay
+ * would brick anyone who has run out of credits *and* cargo - they cannot pay
+ * upkeep, cannot sell anything, and cannot afford fuel, so there is no way
+ * back. Charging a partial bill keeps waiting available and never takes credits
+ * negative; the moment they sell, the full rate resumes.
+ *
+ * This lives here rather than inline in `GameContext` so the guarantee is
+ * reachable by `verify-game.ts`. It was in the component, where no check could
+ * reach it: deleting the `Math.min` left all 114 checks passing.
+ *
+ * Returns the amount actually charged so the log can say whether the bill was
+ * paid in full or not at all.
+ */
+export function waitDay(state: GameState): { state: GameState; charged: number } {
+  const charged = Math.min(dailyUpkeep(state.ship), state.credits)
+  return {
+    state: { ...advanceDay(state), credits: state.credits - charged },
+    charged,
+  }
 }
 
 /**

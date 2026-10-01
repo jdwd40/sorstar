@@ -1,11 +1,11 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { CommodityId, GameState, ShipUpgradeType } from '../types/game'
 import { createGameStore, type AuthUser, type GameStore, type SessionLostReason } from '../services/gameStore'
-import { advanceDay, buyCommodity, cargoBasisAt, sellCommodity } from '../services/marketService'
+import { buyCommodity, cargoBasisAt, sellCommodity, waitDay as waitDayService } from '../services/marketService'
 import { travel as travelService, type TravelResult } from '../services/travelService'
 import { buyUpgrade, describeUpgrade } from '../services/playerService'
 import { createNewGame, netWorth, withLog } from '../services/gameService'
-import { COMMODITY_MAP, GAME_TARGET_NET_WORTH, PLANET_MAP, dailyUpkeep } from '../data/gameData'
+import { COMMODITY_MAP, GAME_TARGET_NET_WORTH, PLANET_MAP } from '../data/gameData'
 
 export interface ActionResult {
   ok: boolean
@@ -325,18 +325,7 @@ const apply = useCallback(
   const waitDay = useCallback(
     (): ActionResult =>
       apply(
-        (state) => {
-          // Charge what the ship can actually pay. Refusing the wait outright
-          // would brick a player who has run out of credits *and* cargo: they
-          // cannot pay upkeep, cannot sell anything, and cannot afford fuel.
-          // Paying a partial bill keeps waiting available and never goes
-          // negative; once they sell, the full rate resumes.
-          const charged = Math.min(dailyUpkeep(state.ship), state.credits)
-          return {
-            state: { ...advanceDay(state), credits: state.credits - charged },
-            charged,
-          }
-        },
+        waitDayService,
         (_before, after, r) => ({
           icon: '🌓',
           text: `A day passes${atPlanet(after)}. Markets re-open.${
