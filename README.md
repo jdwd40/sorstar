@@ -22,7 +22,7 @@ The loop: **Buy** a commodity at a planet where it's cheap → **Travel** to a p
 - **Every figure the UI quotes comes from the same helper the transaction uses.** The Trade tab's sell button, the Ship tab's hold table and the arrival report all read one `saleValue`, so the number on screen is the number credited. Valuing a load by the *listed* price (`qty × price`) looks equivalent and overstates a full hold by double digits, because the listed price is the price of the next unit and ignores the impact of the load itself.
 - Stats name what they measure. **Trading profit** is what sales paid out less what the goods cost — it is not "total profit": fuel, upkeep and upgrades are running costs of the business, not the result of trading it, and they show up in net worth instead. A loss is recorded as a negative, not clamped away. The win screen reports **peak** net worth (the figure you actually won on), and "units traded" counts a unit each time it crosses a market.
 - Upgrades report the new total *and* what it changed: buying the 12 → 20 hold tier says `Cargo Hold Lv1 — 20 units (+8)`, not `(+20 units)`.
-- Saves are versioned (currently v3, for the price-history and `tradingProfit` migrations) and validated/migrated on load. The localStorage key stays at `sorstar.save.v2` on purpose: it names the save, not the schema, so a version bump never strands a browser's progress. Persistence goes through a `GameStore` interface. The default backend is **PocketBase** (see below), with a `LocalStorageGameStore` fallback when `VITE_PB_URL` is not set.
+- Saves are versioned (currently v3, for the price-history and `tradingProfit` migrations) and validated/migrated on load. The localStorage key stays at `sorstar.save.v2` on purpose: it names the save, not the schema, so a version bump never strands a browser's progress. Persistence goes through a `GameStore` interface: **PocketBase** when `VITE_PB_URL` is set, `LocalStorageGameStore` when it is not. There is deliberately no default, so an unconfigured production build saves to localStorage rather than pointing every player's browser at their own machine.
 
 ## PocketBase persistence
 
@@ -48,14 +48,26 @@ npm run dev
 
 `.env.development` already sets `VITE_PB_URL=http://127.0.0.1:8090`, which switches the app to the PocketBase store. Copy `.env.example` for the server admin credentials (`PB_SUPERUSER_EMAIL` / `PB_SUPERUSER_PASSWORD`) and bind address (`PB_HTTP`). `npm run pb:serve` applies the superuser and migrations on the way up, so setup is a server-side step — `npm run build` is a pure frontend build and does not need the PocketBase binary, which keeps a fresh clone and any static-hosting CI working.
 
-`VITE_PB_URL` is inlined into the bundle at build time, so it cannot be changed after deployment, and `127.0.0.1` resolves in the *player's* browser rather than on the server. Keep the `.env.production` default only if the game is served from the same machine as its save server; for any normal static host, override it at build time (`VITE_PB_URL=https://pb.example.com npm run build`) or unset it to fall back to per-browser localStorage saves.
+**`.env.production` sets no `VITE_PB_URL` at all.** It is comments only. This is deliberate:
+
+- `vite build` inlines the value into the bundle, so any default becomes the permanent production value for every player.
+- `127.0.0.1` resolves in the *player's* browser, not on your server. A localhost default would send every player's save requests to their own machine, where there is nothing listening — the game would look configured and silently store saves locally instead.
+- Failing closed to localStorage is honest. A save server that is not there is better than one that cannot be reached.
+
+To use PocketBase in production, supply the URL at build time:
+
+```sh
+VITE_PB_URL=https://pb.example.com npm run build
+```
+
+or put it in an untracked `.env.production.local`, which Vite merges over `.env.production` (and `.gitignore` already covers). With `VITE_PB_URL` unset the app uses `LocalStorageGameStore`: saves live in that one browser and clearing site data loses them.
 
 Schema changes are committed as JS migrations in `pb/pb_migrations` and are applied automatically on `serve`. The admin dashboard lives at `http://127.0.0.1:8090/_/`.
 
 ## Tech & architecture
 
 - Vite + React 18 + TypeScript + Tailwind CSS.
-- **Persistence is isolated behind a service interface** (`GameStore` in `src/services/gameStore.ts`). Two implementations exist: `PocketBaseGameStore` (default, when `VITE_PB_URL` is set) and `LocalStorageGameStore` (fallback).
+- **Persistence is isolated behind a service interface** (`GameStore` in `src/services/gameStore.ts`). Two implementations exist: `PocketBaseGameStore` when `VITE_PB_URL` is set at build time, and `LocalStorageGameStore` otherwise. Nothing defaults to either, so a production build without configuration stores saves locally.
 - Optional WebAudio sound effects (buy/sell/travel/upgrade/wins) with a header mute toggle.
 
 ## Scripts
