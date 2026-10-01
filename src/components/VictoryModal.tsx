@@ -2,6 +2,8 @@ import type { GameState } from '../types/game'
 import { GAME_TARGET_NET_WORTH } from '../data/gameData'
 import { fmt, fmtMoney } from '../utils/format'
 import Modal from './Modal'
+import { StatTile } from './ui/StatusChip'
+import { IconMark } from './ui/Icons'
 
 export default function VictoryModal({
   game,
@@ -14,60 +16,48 @@ export default function VictoryModal({
 }) {
   const profit = game.stats.tradingProfit
   return (
-    <Modal onClose={onContinue} labelledBy="victory-title">
+    <Modal onClose={onContinue} labelledBy="victory-title" tone="alert">
       <div className="text-center">
-        <div className="text-6xl mb-2">🏆</div>
-        <h2 id="victory-title" className="text-3xl font-black tracking-wide text-amber-300 text-glow mb-2">
+        <IconMark className="mx-auto mb-2 h-14 w-14 text-amber-300 text-glow" />
+        <h2
+          id="victory-title"
+          className="mb-2 text-3xl font-black tracking-wide text-amber-200 text-glow"
+        >
           TRAILBLAZER
         </h2>
-        <p className="text-slate-300 mb-1">
-          Your net worth has crossed{' '}
-          <b className="text-white">{fmtMoney(GAME_TARGET_NET_WORTH)}</b>.
+        <p className="mb-1 text-slate-300">
+          Your net worth has crossed <b className="num text-white">{fmtMoney(GAME_TARGET_NET_WORTH)}</b>.
         </p>
-        <p className="text-slate-400 text-sm mb-5">
-          Day {fmt(game.stats.victoryDay ?? game.day)} — the sector's traders now call
-          your name in the same breath as the old merchant houses.
+        <p className="mb-5 text-sm text-slate-400">
+          Day <span className="num">{fmt(game.stats.victoryDay ?? game.day)}</span> — the sector's
+          traders now call your name in the same breath as the old merchant houses.
         </p>
 
-        <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-6 text-left">
-          <div
-            className="bg-slate-800/50 rounded-lg p-3"
+        <div className="mb-6 grid grid-cols-2 gap-2 text-left sm:grid-cols-3">
+          <StatTile
+            label="Peak net worth"
+            value={fmtMoney(game.stats.maxNetWorth)}
             title="The highest net worth you have reached, which is what you won on. Your net worth right now may be lower."
-          >
-            <div className="text-xs uppercase tracking-wider text-slate-400">Peak Net Worth</div>
-            <div className="text-lg font-bold text-white">{fmtMoney(game.stats.maxNetWorth)}</div>
-          </div>
-          <div
-            className="bg-slate-800/50 rounded-lg p-3"
+          />
+          <StatTile
+            label="Trading profit"
+            value={`${profit >= 0 ? '+' : ''}${fmtMoney(profit)}`}
+            tone={profit >= 0 ? 'text-emerald-300' : 'text-rose-300'}
             title="Realised trading profit: what sales paid out, less what the goods cost. Excludes fuel, upkeep and upgrades."
-          >
-            <div className="text-xs uppercase tracking-wider text-slate-400">Trading Profit</div>
-            <div className={`text-lg font-bold ${profit >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-              {profit >= 0 ? '+' : ''}{fmtMoney(profit)}
-            </div>
-          </div>
-          <div className="bg-slate-800/50 rounded-lg p-3">
-            <div className="text-xs uppercase tracking-wider text-slate-400">Trips Made</div>
-            <div className="text-lg font-bold text-white">{fmt(game.stats.tripsMade)}</div>
-          </div>
-          <div className="bg-slate-800/50 rounded-lg p-3">
-            <div className="text-xs uppercase tracking-wider text-slate-400">Days Played</div>
-            <div className="text-lg font-bold text-white">{fmt(game.day)}</div>
-          </div>
-          <div
-            className="bg-slate-800/50 rounded-lg p-3"
+          />
+          <StatTile label="Trips made" value={fmt(game.stats.tripsMade)} />
+          <StatTile label="Days played" value={fmt(game.day)} />
+          <StatTile
+            label="Units traded"
+            value={fmt(game.stats.goodsBought + game.stats.goodsSold)}
             title="Units bought plus units sold. A unit that travels both ways counts twice - it is counted each time it crosses the market."
-          >
-            <div className="text-xs uppercase tracking-wider text-slate-400">Units Traded</div>
-            <div className="text-lg font-bold text-white">{fmt(game.stats.goodsBought + game.stats.goodsSold)}</div>
-          </div>
-          <div
-            className="bg-slate-800/50 rounded-lg p-3"
+          />
+          <StatTile
+            label="Upgrade spend"
+            value={fmtMoney(game.stats.upgradesInvested)}
+            tone="text-indigo-200"
             title="Credits sunk into ship upgrades. Net worth adds this back, so buying an upgrade never moves the goal on its own."
-          >
-            <div className="text-xs uppercase tracking-wider text-slate-400">Upgrade Spend</div>
-            <div className="text-lg font-bold text-indigo-300">{fmtMoney(game.stats.upgradesInvested)}</div>
-          </div>
+          />
         </div>
 
         <div className="flex gap-3">

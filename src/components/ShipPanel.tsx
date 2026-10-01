@@ -1,5 +1,8 @@
 import type { GameState, ShipUpgradeType } from '../types/game'
 import {
+  CARGO_UPGRADES,
+  ENGINE_UPGRADES,
+  NAV_UPGRADES,
   UPGRADE_META,
   cargoCapacityAtLevel,
   dailyUpkeep,
@@ -10,6 +13,9 @@ import { carriedGoods, netWorth } from '../services/gameService'
 import { cargoFree, cargoUsed } from '../services/marketService'
 import { fmt, fmtMoney } from '../utils/format'
 import type { ActionResult } from '../context/GameContext'
+import { StatTile } from './ui/StatusChip'
+import GameBadge from './ui/GameBadge'
+import { IconShip } from './ui/Icons'
 
 interface ShipPanelProps {
   game: GameState
@@ -17,58 +23,87 @@ interface ShipPanelProps {
   resetGame: () => void
 }
 
-interface UpgradeRowProps {
+/** How many tiers the ladder has, so the card can show progress along it. */
+function tierCount(type: ShipUpgradeType): number {
+  switch (type) {
+    case 'cargo':
+      return CARGO_UPGRADES.length
+    case 'engine':
+      return ENGINE_UPGRADES.length
+    case 'nav':
+      return NAV_UPGRADES.length
+  }
+}
+
+function UpgradeCard({
+  game,
+  type,
+  travelUpgrade,
+}: {
   game: GameState
   type: ShipUpgradeType
   travelUpgrade: ShipPanelProps['travelUpgrade']
-}
-
-function UpgradeCard({ game, type, travelUpgrade }: UpgradeRowProps) {
+}) {
   const meta = UPGRADE_META[type]
   const maxed = isMaxUpgrade(game, type)
   const cost = maxed ? 0 : nextUpgradeCost(game, type)
   const affordable = cost > 0 && cost <= game.credits
+  const level =
+    type === 'cargo' ? game.ship.cargoLevel : type === 'engine' ? game.ship.engineLevel : game.ship.navLevel
+  const tiers = tierCount(type)
 
   let current: string
   let next: string
-  let level: number
   switch (type) {
     case 'cargo':
-      level = game.ship.cargoLevel
       current = `${cargoCapacityAtLevel(game.ship.cargoLevel)} units`
       next = maxed ? 'MAX' : `${cargoCapacityAtLevel(game.ship.cargoLevel + 1)} units`
       break
     case 'engine':
-      level = game.ship.engineLevel
       current = `${fuelCostAtLevel(game.ship.engineLevel)} cr/ly`
       next = maxed ? 'MAX' : `${fuelCostAtLevel(game.ship.engineLevel + 1)} cr/ly`
       break
     case 'nav':
-      level = game.ship.navLevel
       current = game.ship.navLevel >= 1 ? 'Online' : 'Offline'
       next = maxed ? 'MAX' : 'Online'
       break
   }
 
   return (
-    <div className="card p-5 space-y-3">
-      <div className="flex items-center justify-between">
+    <div className="card space-y-3 p-4">
+      <div className="flex items-start justify-between gap-3">
         <div className="flex items-center gap-3">
-          <span className="text-2xl">{meta.icon}</span>
+          <span className="text-2xl" aria-hidden="true">
+            {meta.icon}
+          </span>
           <div>
             <h3 className="font-bold text-white">{meta.name}</h3>
             <p className="text-xs text-slate-400">{meta.description}</p>
           </div>
         </div>
-        <span className="text-sm text-slate-400">
-          Lv<span className="text-white font-bold">{level}</span>
-        </span>
+        <GameBadge tone={maxed ? 'good' : 'info'} title={`Tier ${level} of ${tiers}`}>
+          Lv {level}
+          {maxed ? ' · max' : ` / ${tiers}`}
+        </GameBadge>
       </div>
-      <div className="flex items-center justify-between">
-        <div className="text-xs text-slate-400">
-          Current: <span className="text-white font-semibold">{current}</span>
+
+      {/* Progress along the upgrade ladder, tier by tier. */}
+      <div className="flex gap-1" aria-hidden="true">
+        {Array.from({ length: tiers }, (_, i) => (
+          <span
+            key={i}
+            className={`h-1.5 flex-1 rounded-full ${
+              i < level ? 'bg-gradient-to-r from-indigo-400 to-cyan-300' : 'bg-slate-700/70'
+            }`}
+          />
+        ))}
+      </div>
+
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="num text-xs text-slate-400">
+          Current: <span className="font-semibold text-white">{current}</span>
           <span className="mx-2 text-slate-600">→</span>
-          Next: <span className="text-indigo-300 font-semibold">{next}</span>
+          Next: <span className="font-semibold text-indigo-300">{next}</span>
         </div>
         <button
           onClick={() => travelUpgrade(type)}
@@ -80,7 +115,7 @@ function UpgradeCard({ game, type, travelUpgrade }: UpgradeRowProps) {
                 ? `${meta.name} costs ${fmtMoney(cost)}`
                 : `Need ${fmtMoney(cost)} credits`
           }
-          className={`btn-primary text-sm ${maxed ? '!bg-slate-700 !text-slate-300' : ''}`}
+          className={`btn-primary btn-sm ${maxed ? '!bg-slate-700 !text-slate-300' : ''}`}
         >
           {maxed ? 'Maxed' : `Upgrade · ${fmtMoney(cost)}`}
         </button>
@@ -92,6 +127,7 @@ function UpgradeCard({ game, type, travelUpgrade }: UpgradeRowProps) {
 export default function ShipPanel({ game, travelUpgrade, resetGame }: ShipPanelProps) {
   const used = cargoUsed(game)
   const free = cargoFree(game)
+  const capacity = cargoCapacityAtLevel(game.ship.cargoLevel)
   const invested = game.stats.upgradesInvested
   const goods = carriedGoods(game)
   const sellsFor = goods.reduce((sum, g) => sum + g.sellsFor, 0)
@@ -99,113 +135,120 @@ export default function ShipPanel({ game, travelUpgrade, resetGame }: ShipPanelP
   const nw = netWorth(game)
 
   return (
-    <div className="space-y-6">
-      <div className="card p-5">
-        <div className="flex flex-wrap items-center justify-between gap-4">
+    <div className="space-y-4">
+      <section className="card p-4 sm:p-5">
+        <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-3">
-            <span className="text-4xl">🛸</span>
+            <IconShip className="h-8 w-8 text-indigo-300" />
             <div>
-              <h2 className="text-2xl font-bold text-white">
+              <h2 className="flex flex-wrap items-baseline gap-2 text-xl font-bold text-white">
                 {game.ship.name}
-                <span className="ml-3 text-sm font-normal text-slate-400">
-                  {game.ship.className}
-                </span>
+                <span className="text-sm font-normal text-slate-400">{game.ship.className}</span>
               </h2>
-              <p className="text-sm text-slate-400">
-                Your trusty merchant freighter. Net worth {fmtMoney(nw)}.
+              <p className="num text-sm text-slate-400">
+                Your trusty merchant freighter. Net worth{' '}
+                <span className="font-semibold text-indigo-200">{fmtMoney(nw)}</span>.
               </p>
             </div>
           </div>
-          <div className="text-sm text-slate-300">
-            Total invested in upgrades:{' '}
-            <span className="text-indigo-300 font-bold">{fmtMoney(invested)}</span>
+          <div className="num text-xs text-slate-400">
+            Invested in upgrades{' '}
+            <span className="text-sm font-bold text-indigo-300">{fmtMoney(invested)}</span>
           </div>
         </div>
 
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mt-5">
-          <div className="bg-slate-800/50 rounded-lg p-3 text-center">
-            <div className="text-xs uppercase tracking-wider text-slate-400">Cargo</div>
-            <div className="text-lg font-bold text-white">
-              {fmt(used)}/{fmt(cargoCapacityAtLevel(game.ship.cargoLevel))}
-            </div>
-            <div className="text-xs text-slate-500">{free} free</div>
-          </div>
-          <div className="bg-slate-800/50 rounded-lg p-3 text-center">
-            <div className="text-xs uppercase tracking-wider text-slate-400">Engine</div>
-            <div className="text-lg font-bold text-white">
-              {fuelCostAtLevel(game.ship.engineLevel)} cr/ly
-            </div>
-            <div className="text-xs text-slate-500">fuel burn</div>
-          </div>
-          <div className="bg-slate-800/50 rounded-lg p-3 text-center">
-            <div className="text-xs uppercase tracking-wider text-slate-400">Nav Array</div>
-            <div className="text-lg font-bold text-white">
-              {game.ship.navLevel >= 1 ? 'Online' : 'Offline'}
-            </div>
-            <div className="text-xs text-slate-500">
-              {game.ship.navLevel >= 1 ? 'market intel active' : 'install to see runs'}
-            </div>
-          </div>
-          <div className="bg-slate-800/50 rounded-lg p-3 text-center">
-            <div className="text-xs uppercase tracking-wider text-slate-400">Upkeep</div>
-            <div className="text-lg font-bold text-white">{dailyUpkeep(game.ship)} cr</div>
-            <div className="text-xs text-slate-500">
-              per day waited · {fmt(game.stats.tripsMade)} trips
-            </div>
+        <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
+          <StatTile
+            label="Cargo"
+            value={`${fmt(used)}/${fmt(capacity)}`}
+            tone={free === 0 ? 'text-rose-300' : 'text-white'}
+            hint={`${fmt(free)} bays free`}
+          />
+          <StatTile
+            label="Engine"
+            value={`${fuelCostAtLevel(game.ship.engineLevel)}`}
+            hint="cr per light year"
+          />
+          <StatTile
+            label="Nav array"
+            value={game.ship.navLevel >= 1 ? 'Online' : 'Offline'}
+            tone={game.ship.navLevel >= 1 ? 'text-emerald-300' : 'text-slate-300'}
+            hint={game.ship.navLevel >= 1 ? 'market intel active' : 'install to see runs'}
+          />
+          <StatTile
+            label="Upkeep"
+            value={`${fmtMoney(dailyUpkeep(game.ship))}`}
+            hint={`cr/day · ${fmt(game.stats.tripsMade)} trips`}
+          />
+        </div>
+
+        <div className="mt-3" aria-hidden="true">
+          <div className="meter">
+            <div
+              className={`meter-fill bg-gradient-to-r ${
+                free === 0
+                  ? 'from-rose-400 to-amber-300'
+                  : used / capacity > 0.75
+                    ? 'from-amber-400 to-yellow-300'
+                    : 'from-cyan-400 to-indigo-400'
+              }`}
+              style={{ width: `${Math.min(100, (used / Math.max(1, capacity)) * 100)}%` }}
+            />
           </div>
         </div>
-      </div>
+      </section>
 
-      <div>
-        <h3 className="text-lg font-semibold text-indigo-300 mb-3">Upgrades</h3>
-        <div className="space-y-4">
+      <section>
+        <h3 className="panel-heading mb-2 text-indigo-300/90">Upgrades</h3>
+        <div className="space-y-3">
           {(['cargo', 'engine', 'nav'] as ShipUpgradeType[]).map((type) => (
-            <div key={type}><UpgradeCard game={game} type={type} travelUpgrade={travelUpgrade} /></div>
+            <UpgradeCard key={type} game={game} type={type} travelUpgrade={travelUpgrade} />
           ))}
         </div>
-      </div>
+      </section>
 
-      <div className="card p-5">
-        <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
-          <h3 className="font-semibold text-white">Cargo Hold</h3>
+      <section className="card p-4 sm:p-5">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <h3 className="font-semibold text-white">Cargo hold</h3>
           {sellsFor > 0 && (
             <div
-              className="text-sm text-slate-400"
+              className="num text-sm text-slate-400"
               title="What selling the whole hold here would credit. It already allows for the market moving under your own order, so it is less than Qty x Price Here."
             >
               Sells here:{' '}
-              <span className="text-cyan-300 font-bold">{fmtMoney(sellsFor)}</span>
-              <span className={`ml-2 ${holdProfit >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                {holdProfit >= 0 ? '+' : ''}{fmtMoney(holdProfit)}
+              <span className="font-bold text-cyan-200">{fmtMoney(sellsFor)}</span>
+              <span className={`ml-2 ${holdProfit >= 0 ? 'text-emerald-300' : 'text-rose-300'}`}>
+                {holdProfit >= 0 ? '+' : ''}
+                {fmtMoney(holdProfit)}
               </span>
-              <span className="text-xs text-slate-500"> vs what you paid</span>
+              <span className="text-xs text-slate-500">vs what you paid</span>
             </div>
           )}
         </div>
         {goods.length === 0 ? (
-          <div className="border border-dashed border-slate-700 rounded-lg p-6 text-center text-sm text-slate-500">
+          <div className="rounded-lg border border-dashed border-slate-700 p-6 text-center text-sm text-slate-500">
             Your hold is empty. Head to the Trade tab and pick up cargo.
           </div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
+          <div className="table-wrap -mx-4 px-4 sm:mx-0 sm:px-0">
+            <table className="w-full min-w-[32rem] text-sm">
               <thead>
-                <tr className="text-left text-slate-400 border-b border-slate-700">
-                  <th className="py-2 pr-4">Good</th>
-                  <th className="py-2 pr-4 text-right">Qty</th>
-                  <th className="py-2 pr-4 text-right">Your Cost</th>
+                <tr className="table-head">
+                  <th className="th">Good</th>
+                  <th className="th text-right">Qty</th>
+                  <th className="th text-right">Your cost</th>
                   <th
-                    className="py-2 pr-4 text-right"
+                    className="th text-right"
                     title="The listed price per unit. Your own sale pushes it down as you sell."
                   >
-                    Price Here
+                    Price here
                   </th>
-                  <th className="py-2 pr-4 text-right">Per-unit</th>
+                  <th className="th text-right">Per-unit</th>
                   <th
-                    className="py-2 text-right"
+                    className="th text-right"
                     title="What selling this line here pays, after the market absorbs your order."
                   >
-                    Sells For
+                    Sells for
                   </th>
                 </tr>
               </thead>
@@ -215,20 +258,27 @@ export default function ShipPanel({ game, travelUpgrade, resetGame }: ShipPanelP
                   // per-unit profit has to be the profit the sale really makes.
                   const perUnit = sellsFor / qty - costBasis
                   return (
-                    <tr key={commodity.id} className="border-b border-slate-800/60">
-                      <td className="py-2 pr-4">
-                        <span className="text-lg mr-1.5">{commodity.icon}</span>
-                        <span className="text-white font-medium">{commodity.name}</span>
+                    <tr key={commodity.id} className="row row-hover">
+                      <td className="td">
+                        <span className="mr-1.5 text-lg" aria-hidden="true">
+                          {commodity.icon}
+                        </span>
+                        <span className="font-medium text-white">{commodity.name}</span>
                       </td>
-                      <td className="py-2 pr-4 text-right text-white font-semibold">{fmt(qty)}</td>
-                      <td className="py-2 pr-4 text-right text-slate-300">{fmtMoney(costBasis)}</td>
-                      <td className="py-2 pr-4 text-right text-slate-300">{fmtMoney(herePrice)}</td>
+                      <td className="td num text-right font-semibold text-white">{fmt(qty)}</td>
+                      <td className="td num text-right text-slate-300">{fmtMoney(costBasis)}</td>
+                      <td className="td num text-right text-slate-300">{fmtMoney(herePrice)}</td>
                       <td
-                        className={`py-2 pr-4 text-right font-semibold ${perUnit >= 0 ? 'text-emerald-400' : 'text-red-400'}`}
+                        className={`td num text-right font-semibold ${
+                          perUnit >= 0 ? 'text-emerald-300' : 'text-rose-300'
+                        }`}
                       >
-                        {perUnit >= 0 ? '+' : ''}{fmtMoney(perUnit)}
+                        {perUnit >= 0 ? '+' : ''}
+                        {fmtMoney(perUnit)}
                       </td>
-                      <td className="py-2 text-right text-cyan-300 font-bold">{fmtMoney(sellsFor)}</td>
+                      <td className="td num text-right font-bold text-cyan-200">
+                        {fmtMoney(sellsFor)}
+                      </td>
                     </tr>
                   )
                 })}
@@ -236,12 +286,12 @@ export default function ShipPanel({ game, travelUpgrade, resetGame }: ShipPanelP
             </table>
           </div>
         )}
-      </div>
+      </section>
 
       <div className="text-center">
         <button
           onClick={() => resetGame()}
-          className="text-red-400/80 hover:text-red-300 text-sm underline underline-offset-2"
+          className="text-sm text-rose-300/80 underline underline-offset-2 hover:text-rose-200"
         >
           Reset Game
         </button>

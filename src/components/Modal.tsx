@@ -14,12 +14,24 @@ interface ModalProps {
    * to until the player has chosen. It still traps focus either way.
    */
   dismissable?: boolean
+  /**
+   * `alert` warms the panel's edge for the one dialog that interrupts play, so
+   * it reads as an event in progress rather than another card. Presentation
+   * only: the encounter's behaviour does not depend on it.
+   */
+  tone?: 'default' | 'alert'
 }
 
 const FOCUSABLE =
   'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
 
-export default function Modal({ onClose, children, labelledBy, dismissable = true }: ModalProps) {
+export default function Modal({
+  onClose,
+  children,
+  labelledBy,
+  dismissable = true,
+  tone = 'default',
+}: ModalProps) {
   const dialogRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -80,8 +92,11 @@ export default function Modal({ onClose, children, labelledBy, dismissable = tru
       <div
         ref={dialogRef}
         tabIndex={-1}
-        className="relative card p-6 w-full max-w-lg modal-pop max-h-[85vh] overflow-y-auto outline-none"
-
+        className={`relative card modal-pop max-h-[85vh] w-full max-w-lg overflow-y-auto p-6 outline-none ${
+          tone === 'alert'
+            ? '!border-amber-400/50 shadow-[0_0_60px_-12px_rgba(251,191,36,0.45)]'
+            : ''
+        }`}
       >
         {children}
       </div>

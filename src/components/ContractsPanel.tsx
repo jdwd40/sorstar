@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 import type { CommodityId, Contract, GameState } from '../types/game'
-import { COMMODITY_MAP, MAX_ACTIVE_CONTRACTS, PLANET_MAP, PLANET_TYPE_META } from '../data/gameData'
+import { COMMODITY_MAP, MAX_ACTIVE_CONTRACTS, PLANET_MAP } from '../data/gameData'
 import {
   activeContracts,
   availableContracts,
@@ -12,6 +12,9 @@ import { cargoFree, quoteBuy } from '../services/marketService'
 import { commodityEventScale } from '../services/marketEventService'
 import { fmt, fmtMoney } from '../utils/format'
 import type { ActionResult } from '../context/GameContext'
+import PlanetVisual from './ui/PlanetVisual'
+import GameBadge, { type BadgeTone } from './ui/GameBadge'
+import { IconContract, IconScroll } from './ui/Icons'
 
 interface ContractsPanelProps {
   game: GameState
@@ -40,14 +43,39 @@ function commodityName(commodityId: CommodityId): string {
   return COMMODITY_MAP[commodityId]?.name ?? commodityId
 }
 
-/** "3 days left" / "due today", coloured by how little room is left. */
+/** "3 days left" / "due today", as a badge coloured by how little room is left. */
 function Deadline({ game, contract }: { game: GameState; contract: Contract }) {
   const left = contract.deadlineDay - game.day
-  const tone = left <= 0 ? 'text-red-400' : left <= 2 ? 'text-amber-400' : 'text-slate-400'
+  const tone: BadgeTone = left <= 0 ? 'danger' : left <= 2 ? 'warn' : 'neutral'
   return (
-    <span className={tone}>
-      {left <= 0 ? 'due today' : `${fmt(left)} day${left === 1 ? '' : 's'} left`}
-    </span>
+    <GameBadge tone={tone} title={`Deadline is day ${fmt(contract.deadlineDay)}`}>
+      {left <= 0 ? 'due today' : `${fmt(left)}d left`}
+    </GameBadge>
+  )
+}
+
+/** How much of the load is actually in the hold, which is the whole question. */
+function LoadMeter({ have, need }: { have: number; need: number }) {
+  const fill = need > 0 ? Math.min(1, have / need) : 0
+  return (
+    <div className="flex items-center gap-2">
+      <div className="meter flex-1" aria-hidden="true">
+        <div
+          className={`meter-fill bg-gradient-to-r ${
+            fill >= 1 ? 'from-emerald-400 to-cyan-300' : 'from-indigo-400 to-cyan-300'
+          }`}
+          style={{ width: `${fill * 100}%` }}
+        />
+      </div>
+      <span
+        className={`num text-[11px] font-semibold ${
+          fill >= 1 ? 'text-emerald-300' : 'text-slate-400'
+        }`}
+        title={`${fmt(have)} of ${fmt(need)} aboard`}
+      >
+        {fmt(have)}/{fmt(need)}
+      </span>
+    </div>
   )
 }
 
@@ -63,34 +91,43 @@ function ContractCard({
 }) {
   const { title, client, description } = describeContract(contract)
   const planet = PLANET_MAP[contract.destinationPlanetId]
-  const icon = planet ? PLANET_TYPE_META[planet.type]?.icon : null
   const route = contractRoute(contract, game.ship.engineLevel)
+  const aboard = game.cargo[contract.commodityId] ?? 0
 
   return (
-    <div className="rounded-lg border border-slate-700 bg-slate-800/50 p-3 space-y-2">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <div className="font-semibold text-white text-sm">{title}</div>
+    <div className="space-y-2 rounded-lg border border-slate-700/70 bg-slate-900/40 p-3">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="min-w-0">
+          <div className="text-sm font-semibold text-white">{title}</div>
           <div className="text-xs text-slate-500">{client}</div>
         </div>
         <div className="text-right">
-          <div className="font-bold text-emerald-400 text-sm">{fmtMoney(contract.reward)}</div>
-          <div className="text-xs text-slate-500">
-            <Deadline game={game} contract={contract} /> · Day {fmt(contract.deadlineDay)}
+          <div className="num text-sm font-bold text-emerald-300">{fmtMoney(contract.reward)}</div>
+          <div className="mt-0.5 flex justify-end">
+            <Deadline game={game} contract={contract} />
           </div>
         </div>
       </div>
 
-      <div className="text-xs text-slate-400">
-        <span className="text-slate-200 font-medium">
+      {/* The job, in one line: this much of that good, over there. */}
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-400">
+        <span className="font-semibold text-slate-200">
+          <span aria-hidden="true">{COMMODITY_MAP[contract.commodityId]?.icon}</span>{' '}
           {fmt(contract.quantity)}× {commodityName(contract.commodityId)}
-        </span>{' '}
-        → {icon ? <span className="mr-0.5">{icon}</span> : null}
-        {planet?.name ?? contract.destinationPlanetId} · {fmt(route.days)} ly ·{' '}
-        {fmt(route.fuelCost)} cr fuel
+        </span>
+        <span className="text-slate-600">→</span>
+        <span className="flex items-center gap-1 font-medium text-slate-200">
+          <PlanetVisual planet={planet} size="xs" />
+          {planet?.name ?? contract.destinationPlanetId}
+        </span>
+        <span className="num text-slate-500">
+          {fmt(route.days)} ly · {fmtMoney(route.fuelCost)} cr fuel
+        </span>
       </div>
 
-      <div className="text-xs text-slate-500 italic">“{description}”</div>
+      <LoadMeter have={aboard} need={contract.quantity} />
+
+      <div className="text-xs italic text-slate-500">“{description}”</div>
 
       {children}
     </div>
@@ -110,20 +147,28 @@ export default function ContractsPanel({
     <div className="space-y-4">
       <div className="card p-4">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <h3 className="text-lg font-semibold text-indigo-300">📜 Delivery Contracts</h3>
-          <div className="text-xs text-slate-400">
-            {active.length}/{MAX_ACTIVE_CONTRACTS} carried · {offers.length} on offer here
+          <h3 className="flex items-center gap-2 text-lg font-semibold text-indigo-300">
+            <IconContract className="h-4 w-4" />
+            Delivery contracts
+          </h3>
+          <div className="flex items-center gap-1.5">
+            <GameBadge tone={atCap ? 'warn' : 'info'} title="Contracts you have accepted">
+              {active.length}/{MAX_ACTIVE_CONTRACTS} carried
+            </GameBadge>
+            <GameBadge tone="neutral" title="Jobs on offer at this planet">
+              {offers.length} on offer
+            </GameBadge>
           </div>
         </div>
-        <p className="text-xs text-slate-500 mt-2">
+        <p className="mt-2 text-xs text-slate-500">
           Buy the load yourself on the origin market, fly it, and hand it over at the
           destination. Accepting a contract moves nothing — the goods, the fuel and the
           deadline are all yours to manage.
         </p>
       </div>
 
-      <div className="card p-4 space-y-3">
-        <h4 className="text-sm font-semibold text-slate-300">Carried ({active.length})</h4>
+      <div className="card space-y-3 p-4">
+        <h4 className="panel-heading">Carried · {fmt(active.length)}</h4>
         {active.length === 0 ? (
           <p className="text-sm text-slate-500">Nothing on the books.</p>
         ) : (
@@ -138,10 +183,13 @@ export default function ContractsPanel({
         )}
       </div>
 
-      <div className="card p-4 space-y-3">
-        <h4 className="text-sm font-semibold text-slate-300">On offer here ({offers.length})</h4>
+      <div className="card space-y-3 p-4">
+        <h4 className="panel-heading">On offer here · {fmt(offers.length)}</h4>
         {offers.length === 0 ? (
-          <p className="text-sm text-slate-500">No work on offer at this planet.</p>
+          <p className="flex items-center gap-2 text-sm text-slate-500">
+            <IconScroll className="h-4 w-4" />
+            No work on offer at this planet.
+          </p>
         ) : (
           offers.map((contract) => (
             <OfferCard
@@ -176,21 +224,21 @@ function ActiveContractCard({
     <ContractCard game={game} contract={contract}>
       {here ? (
         short > 0 ? (
-          <div className="text-xs text-amber-400">
+          <div className="text-xs text-amber-300">
             Here, but {fmt(short)}× {commodityName(contract.commodityId)} short. Buy the
             difference on this market.
           </div>
-        ) : null
+        ) : (
+          <div className="text-xs text-emerald-300">Full load aboard, at the destination.</div>
+        )
       ) : (
         <RouteHint game={game} contract={contract} />
       )}
       <button
         onClick={deliver}
         disabled={!ready}
-        className={`w-full px-3 py-2 rounded text-sm font-semibold transition-colors ${
-          ready
-            ? 'bg-emerald-600 hover:bg-emerald-500 text-white'
-            : 'bg-slate-700 text-slate-500 cursor-not-allowed'
+        className={`w-full rounded px-3 py-2 text-sm font-semibold transition-colors ${
+          ready ? 'btn-success' : 'btn-ghost text-slate-500'
         }`}
       >
         {ready
@@ -208,10 +256,10 @@ function RouteHint({ game, contract }: { game: GameState; contract: Contract }) 
   if (game.planetId !== contract.originPlanetId) {
     const route = routeFromHere(game, contract)
     return (
-      <div className="text-xs text-slate-400">
+      <div className="num text-xs text-slate-400">
         Fly {fmt(route.days)} ly to{' '}
         {PLANET_MAP[contract.destinationPlanetId]?.name ?? contract.destinationPlanetId} (
-        {fmt(route.fuelCost)} cr fuel)
+        {fmtMoney(route.fuelCost)} cr fuel)
       </div>
     )
   }
@@ -221,16 +269,18 @@ function RouteHint({ game, contract }: { game: GameState; contract: Contract }) 
   const aboard = game.cargo[contract.commodityId] ?? 0
 
   return (
-    <div className="text-xs text-slate-400 space-y-0.5">
+    <div className="space-y-0.5 text-xs text-slate-400">
       <div>
         Buy {fmt(contract.quantity - aboard)}× {commodityName(contract.commodityId)} on this
         market for {fmtMoney(cost)} cr
         {free < contract.quantity - aboard ? (
-          <span className="text-amber-400"> — hold has room for {fmt(free)}</span>
+          <span className="text-amber-300"> — hold has room for {fmt(free)}</span>
         ) : null}
-        {cost > game.credits ? <span className="text-amber-400"> — short of credits</span> : null}
+        {cost > game.credits ? <span className="text-amber-300"> — short of credits</span> : null}
       </div>
-      {aboard > 0 ? <div className="text-slate-500">Already aboard: {fmt(aboard)}×</div> : null}
+      {aboard > 0 ? (
+        <div className="num text-slate-500">Already aboard: {fmt(aboard)}×</div>
+      ) : null}
     </div>
   )
 }
@@ -249,24 +299,28 @@ function OfferCard({
   const route = contractRoute(contract, game.ship.engineLevel)
   const buyCost = localBuyCost(game, contract.commodityId, contract.quantity)
   const origin = PLANET_MAP[contract.originPlanetId]?.name ?? contract.originPlanetId
+  const margin = contract.reward - buyCost - route.fuelCost
 
   return (
     <ContractCard game={game} contract={contract}>
-      <div className="text-xs text-slate-400 space-y-0.5">
-        <div>
-          Offered at {origin} · the load costs {fmtMoney(buyCost)} cr on this market
+      <div className="space-y-0.5 text-xs text-slate-400">
+        <div className="flex flex-wrap items-center gap-x-2">
+          <span className="flex items-center gap-1">
+            Offered at
+            <PlanetVisual planet={PLANET_MAP[contract.originPlanetId]} size="xs" />
+            <span className="font-medium text-slate-200">{origin}</span>
+          </span>
+          <span className="num text-slate-500">load costs {fmtMoney(buyCost)} cr here</span>
         </div>
-        <div className="text-slate-500">
-          ≈ {fmtMoney(contract.reward - buyCost - route.fuelCost)} cr over goods and fuel
+        <div className="num text-slate-500">
+          ≈ {fmtMoney(margin)} cr over goods and fuel
         </div>
       </div>
       <button
         onClick={accept}
         disabled={blocked}
-        className={`w-full px-3 py-2 rounded text-sm font-semibold transition-colors ${
-          blocked
-            ? 'bg-slate-700 text-slate-500 cursor-not-allowed'
-            : 'bg-indigo-600 hover:bg-indigo-500 text-white'
+        className={`w-full rounded px-3 py-2 text-sm font-semibold transition-colors ${
+          blocked ? 'btn-ghost text-slate-500' : 'btn-primary'
         }`}
       >
         {blocked ? `Carrying ${MAX_ACTIVE_CONTRACTS} contracts` : 'Accept contract'}

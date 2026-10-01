@@ -1,8 +1,11 @@
 import type { GameState } from '../types/game'
 import { PLANET_MAP } from '../data/gameData'
 import { describeEncounter, encounterOptions } from '../services/encounterService'
-import { fmtMoney } from '../utils/format'
+import { fmt, fmtMoney } from '../utils/format'
 import Modal from './Modal'
+import GameBadge from './ui/GameBadge'
+import PlanetVisual from './ui/PlanetVisual'
+import { IconBlocked, IconWarning } from './ui/Icons'
 import type { ActionResult } from '../context/GameContext'
 
 interface EncounterModalProps {
@@ -32,24 +35,45 @@ export default function EncounterModal({ game, onChoose, onResolved }: Encounter
   if (!pending) return null
   const { title, icon, description } = describeEncounter(pending)
   const options = encounterOptions(game, pending)
-  const destination = PLANET_MAP[pending.destinationPlanetId]?.name
+  const destination = PLANET_MAP[pending.destinationPlanetId]
 
   return (
-    <Modal onClose={() => {}} labelledBy="encounter-title" dismissable={false}>
-      <div className="flex items-center gap-3 mb-1">
-        <span className="text-4xl">{icon}</span>
-        <h2 id="encounter-title" className="text-2xl font-bold text-white uppercase tracking-wide">
+    <Modal onClose={() => {}} labelledBy="encounter-title" dismissable={false} tone="alert">
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <GameBadge tone="warn" pulse>
+          <IconWarning className="h-3 w-3" />
+          Jump interrupted
+        </GameBadge>
+        <span className="num text-[11px] uppercase tracking-wider text-slate-500">
+          Day {fmt(game.day)}
+          {destination && (
+            <>
+              {' '}
+              · bound for{' '}
+              <span className="inline-flex items-center gap-1 align-middle text-slate-300">
+                <PlanetVisual planet={destination} size="xs" />
+                {destination.name}
+              </span>
+            </>
+          )}
+        </span>
+      </div>
+
+      <div className="mb-4 flex items-center gap-4">
+        <span
+          className="flex h-14 w-14 shrink-0 items-center justify-center rounded-full border border-amber-400/40 bg-amber-500/10 text-3xl shadow-[0_0_30px_-8px_rgba(251,191,36,0.8)]"
+          aria-hidden="true"
+        >
+          {icon}
+        </span>
+        <h2 id="encounter-title" className="text-xl font-bold uppercase tracking-wide text-white">
           {title}
         </h2>
       </div>
-      {destination && (
-        <p className="text-xs uppercase tracking-wider text-slate-500 mb-3">
-          In transit to {destination} · day {game.day}
-        </p>
-      )}
-      <p className="text-sm text-slate-300 mb-5">{description}</p>
 
-      <div className="space-y-3">
+      <p className="mb-4 text-sm text-slate-300">{description}</p>
+
+      <div className="space-y-2">
         {options.map((option) => {
           const blocked = option.blockedReason !== undefined
           return (
@@ -58,32 +82,39 @@ export default function EncounterModal({ game, onChoose, onResolved }: Encounter
               onClick={() => onResolved(onChoose(option.id))}
               disabled={blocked}
               title={option.blockedReason}
-              className={`w-full text-left px-4 py-3 rounded-lg border transition-colors ${
+              className={`w-full rounded-lg border px-4 py-3 text-left transition-colors ${
                 blocked
-                  ? 'bg-slate-800/40 border-slate-800 text-slate-500 cursor-not-allowed'
-                  : 'bg-slate-800/80 border-slate-600 hover:bg-slate-700 hover:border-indigo-400'
+                  ? 'cursor-not-allowed border-slate-800 bg-slate-800/30 text-slate-500'
+                  : 'border-slate-600 bg-slate-800/70 hover:border-amber-400/70 hover:bg-slate-800'
               }`}
             >
-              <div className="flex items-baseline justify-between gap-3">
-                <span className="font-semibold text-white">
-                  {option.label}
-                  {option.cost > 0 ? (
-                    <span className="text-amber-300"> — {fmtMoney(option.cost)} cr</span>
-                  ) : null}
-                </span>
+              <div className="flex items-start justify-between gap-3">
+                <span className="font-semibold text-white">{option.label}</span>
+                {option.cost > 0 ? (
+                  <GameBadge tone="warn" title="A certain cost">
+                    {fmtMoney(option.cost)} cr
+                  </GameBadge>
+                ) : null}
               </div>
-              <div className="text-xs text-slate-400 mt-0.5">
+              <div className="mt-0.5 text-xs text-slate-400">
                 {blocked ? option.blockedReason : option.detail}
               </div>
               {!blocked && option.risk && (
-                <div className="text-xs text-slate-500 mt-0.5">{option.risk}</div>
+                <div className="mt-1 text-xs italic text-amber-300/80">{option.risk}</div>
+              )}
+              {blocked && (
+                <div className="mt-1 flex items-center gap-1 text-[11px] text-slate-500">
+                  <IconBlocked className="h-3 w-3" />
+                  Unavailable
+                </div>
               )}
             </button>
           )
         })}
       </div>
 
-      <p className="text-[11px] text-slate-600 mt-4">
+      <p className="mt-4 flex items-center gap-2 text-[11px] text-slate-500">
+        <IconBlocked className="h-3 w-3 shrink-0" />
         Your jump is on hold until you choose. Nothing else can be done until the ship
         lands.
       </p>

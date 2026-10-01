@@ -1,29 +1,20 @@
 import { useMemo, useState } from 'react'
 import type { CommodityId, GameState, Planet } from '../types/game'
-import {
-  COMMODITIES,
-  COMMODITY_MAP,
-  PLANET_TYPE_META,
-  cargoCapacityAtLevel,
-  dailyUpkeep,
-} from '../data/gameData'
+import { COMMODITIES, PLANET_TYPE_META, cargoCapacityAtLevel } from '../data/gameData'
 import { cargoFree, cargoUsed, priceDirection, quoteBuy, quoteSell } from '../services/marketService'
-import {
-  commodityEventScale,
-  eventDaysRemaining,
-  eventDefinition,
-  eventMoves,
-  eventsAt,
-} from '../services/marketEventService'
+import { commodityEventScale } from '../services/marketEventService'
 import { fmt, fmtMoney } from '../utils/format'
 import type { ActionResult } from '../context/GameContext'
+import GameBadge from './ui/GameBadge'
+import MarketAlert from './ui/MarketAlert'
+import { moveTone } from './ui/marketBadges'
+import { IconPlanetType } from './ui/Icons'
 
 interface MarketPanelProps {
   game: GameState
   planet: Planet
   buy: (commodityId: CommodityId, qty: number) => ActionResult
   sell: (commodityId: CommodityId, qty: number) => ActionResult
-  waitDay: () => void
 }
 
 function priceBand(price: number, base: number, mod: number): 'cheap' | 'fair' | 'dear' {
@@ -35,9 +26,9 @@ function priceBand(price: number, base: number, mod: number): 'cheap' | 'fair' |
 }
 
 const PRICE_COLOR: Record<'cheap' | 'fair' | 'dear', string> = {
-  cheap: 'text-emerald-400',
+  cheap: 'text-emerald-300',
   fair: 'text-white',
-  dear: 'text-red-400',
+  dear: 'text-rose-300',
 }
 
 const ARROW: Record<'up' | 'down' | 'flat', string> = {
@@ -47,63 +38,27 @@ const ARROW: Record<'up' | 'down' | 'flat', string> = {
 }
 
 const ARROW_COLOR: Record<'up' | 'down' | 'flat', string> = {
-  up: 'text-emerald-400',
-  down: 'text-red-400',
+  up: 'text-emerald-300',
+  down: 'text-rose-300',
   flat: 'text-slate-500',
 }
 
-/** "Food: +45%", signed so a discount reads as one at a glance. */
-function moveLabel(commodityId: CommodityId, multiplier: number): string {
-  const pct = Math.round((multiplier - 1) * 100)
-  return `${COMMODITY_MAP[commodityId].name}: ${pct >= 0 ? '+' : ''}${pct}%`
-}
-
-function MarketAlerts({ game, planet }: { game: GameState; planet: Planet }) {
-  const active = eventsAt(game.activeEvents, planet.id, game.day)
-  // No events is the normal case: an empty panel would be noise on most days.
-  if (active.length === 0) return null
-  return (
-    <div className="card p-4 border-amber-500/40">
-      <h3 className="text-xs uppercase tracking-wider text-amber-300 mb-2">⚠ Market Alert</h3>
-      <div className="space-y-2">
-        {active.map((event) => {
-          const def = eventDefinition(event)
-          const days = eventDaysRemaining(event, game.day)
-          return (
-            <div key={event.id}>
-              <div className="text-sm font-semibold text-amber-200">
-                {def?.name ?? event.eventType}
-              </div>
-              <div className="text-xs text-slate-400">{def?.description}</div>
-              <div className="text-xs text-slate-300">
-                {eventMoves(event).map((move) => (
-                  <span
-                    key={move.commodityId}
-                    className={`mr-3 font-semibold ${move.multiplier > 1 ? 'text-red-400' : 'text-emerald-400'}`}
-                  >
-                    {moveLabel(move.commodityId, move.multiplier)}
-                  </span>
-                ))}
-                <span className="text-slate-500">
-                  {days} day{days === 1 ? '' : 's'} remaining
-                </span>
-              </div>
-            </div>
-          )
-        })}
-      </div>
-    </div>
-  )
-}
-
-export default function MarketPanel({ game, planet, buy, sell, waitDay }: MarketPanelProps) {
+/**
+ * The market.
+ *
+ * Every number here is the number the trade services will charge: the quotes
+ * come from `quoteBuy`/`quoteSell` with the same event multiplier those
+ * functions apply, and the affordable maximum is found by bisecting the same
+ * quote rather than by dividing credits by a price that then rises as the order
+ * fills. So the table can be read before the button is pressed and still be
+ * true afterwards.
+ */
+export default function MarketPanel({ game, planet, buy, sell }: MarketPanelProps) {
   const [inputs, setInputs] = useState<Record<string, string>>({})
-  const capacity = cargoCapacityAtLevel(game.ship.cargoLevel)
-  const used = cargoUsed(game)
-  const free = cargoFree(game)
-  const upkeep = dailyUpkeep(game.ship)
-  const canPayUpkeep = game.credits >= upkeep
   const meta = PLANET_TYPE_META[planet.type]
+  const capacity = cargoCapacityAtLevel(game.ship.cargoLevel)
+  const free = cargoFree(game)
+  const used = cargoUsed(game)
 
   const rows = useMemo(() => {
     return COMMODITIES.map((commodity) => {
@@ -117,9 +72,8 @@ export default function MarketPanel({ game, planet, buy, sell, waitDay }: Market
       // price shown during a shortage is the price that will be charged.
       const eventScale = commodityEventScale(game.activeEvents, planet.id, commodity.id, game.day)
 
-      // Quote through the same helpers the trade functions use, so the cost
-      // shown here is the cost charged. The buy price rises as stock is
-      // drained, so the affordable maximum needs a bisection, not a divide.
+      // The buy price rises as stock is drained, so the affordable maximum needs
+      // a bisection, not a divide.
       const maxByCredits = (() => {
         if (!listing) return 0
         let lo = 0
@@ -139,7 +93,10 @@ export default function MarketPanel({ game, planet, buy, sell, waitDay }: Market
       const buyCost = qty > 0 ? buyQuote.cost : 0
       const canBuy = qty > 0 && qty <= maxBuy
       const canSell = qty > 0 && qty <= owned
-      const sellValue = listing ? quoteSell(planet, commodity, listing, qty, game.day, eventScale).proceeds : 0
+      const sellQuote = listing
+        ? quoteSell(planet, commodity, listing, qty, game.day, eventScale)
+        : { proceeds: 0 }
+      const sellValue = sellQuote.proceeds
 
       let buyTooltip = `Buy ${qty} for ${fmtMoney(buyCost)}`
       if (!canBuy) {
@@ -160,12 +117,17 @@ export default function MarketPanel({ game, planet, buy, sell, waitDay }: Market
         inputStr,
         maxBuy,
         buyCost,
+        buyUnit: buyQuote.unitPrice,
         canBuy,
         canSell,
         sellValue,
         buyTooltip,
         band,
         dir,
+        // An event on this good is visible on the alert strip above; here it
+        // just marks the row, coloured by the sign of the multiplier.
+        eventPct: eventScale === 1 ? 0 : Math.round((eventScale - 1) * 100),
+        eventScale,
       }
     })
   }, [game, planet, inputs, free])
@@ -187,154 +149,211 @@ export default function MarketPanel({ game, planet, buy, sell, waitDay }: Market
   }
 
   return (
-    <div className="space-y-6">
-      <MarketAlerts game={game} planet={planet} />
+    <div className="space-y-4">
+      <MarketAlert game={game} planet={planet} />
 
-      <div className="card p-5">
-        <div className="flex flex-wrap items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <span className="text-4xl">{planet.icon}</span>
-            <div>
-              <h2 className="text-2xl font-bold text-white flex items-center gap-2">
-                {planet.name}
-                <span className={`text-xs font-medium px-2 py-0.5 rounded-full bg-slate-800 ${meta.color}`}>
-                  {meta.icon} {planet.type}
-                </span>
-              </h2>
-              <p className="text-slate-400 text-sm max-w-xl">{planet.description}</p>
-            </div>
+      <div className="card p-4 sm:p-5">
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h3 className="panel-heading text-indigo-300/90">Market</h3>
+            <p className="mt-0.5 flex items-center gap-2 text-sm text-slate-300">
+              <span className="font-semibold text-white">{planet.name}</span>
+              <span className={`flex items-center gap-1 text-[10px] font-medium uppercase tracking-wide ${meta.color}`}>
+                <IconPlanetType type={planet.type} className="h-3 w-3" />
+                {planet.type}
+              </span>
+            </p>
           </div>
-          <div className="text-right text-sm text-slate-300">
-            <div>
-              Population:{' '}
-              <span className="text-white font-semibold">{planet.population.toLocaleString()}</span>
-            </div>
-            <button
-              onClick={waitDay}
-              title={
-                canPayUpkeep
-                  ? undefined
-                  : `Only ${game.credits} cr on hand - upkeep will be paid down to that.`
-              }
-              className="btn-ghost mt-2 text-xs"
-            >
-              Wait one day
-              <span className="ml-1 text-slate-400">
-                ({upkeep} cr upkeep{canPayUpkeep ? '' : ', partial'})
-              </span>
-            </button>
-          </div>
-        </div>
-      </div>
-
-      <div className="card p-5">
-        <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
-          <h3 className="text-lg font-semibold text-indigo-300">Market</h3>
-          <div className="flex flex-wrap items-center gap-4 text-sm">
-            <div className="flex items-center gap-2">
-              <span className="text-slate-400">Credits</span>
-              <span className="text-emerald-400 font-bold">{fmtMoney(game.credits)}</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="text-slate-400">Cargo</span>
-              <span className="text-white font-bold">
-                {fmt(used)}/{fmt(capacity)}
-              </span>
-              <span className="text-slate-500 text-xs">
-                {Math.round((used / Math.max(1, capacity)) * 100)}%
-              </span>
-              {free === 0 && <span className="text-red-400 text-xs">FULL</span>}
-            </div>
-            <div className="flex items-center gap-1 text-xs text-slate-500" title="Price moves vs yesterday">
-              <span className="text-emerald-400">▲</span> up
-              <span className="text-red-400">▼</span> down
-            </div>
+          <div className="flex items-center gap-3 text-[11px] text-slate-500">
+            <span title="A ▲ or ▼ means the price moved while you were away">
+              <span className="text-emerald-300">▲</span> dearer ·{' '}
+              <span className="text-rose-300">▼</span> cheaper
+            </span>
+            <span className="sm:hidden">swipe the table →</span>
           </div>
         </div>
 
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
+        <div className="table-wrap -mx-4 px-4 sm:mx-0 sm:px-0">
+          <table className="w-full min-w-[36rem] text-sm">
             <thead>
-              <tr className="text-left text-slate-400 border-b border-slate-700">
-                <th className="py-2 pr-4">Good</th>
-                <th className="py-2 pr-4 text-right">Price</th>
-                <th className="py-2 pr-4 text-right">Stock</th>
-                <th className="py-2 pr-4 text-right">Owned</th>
-                <th className="py-2 pr-4 text-right">Qty</th>
-                <th className="py-2 pr-4 text-center">Buy</th>
-                <th className="py-2 text-center">Sell</th>
+              <tr className="table-head">
+                <th className="th">Good</th>
+                <th className="th text-right">Price</th>
+                <th className="th text-right">Stock</th>
+                <th className="th text-right">Held</th>
+                <th className="th text-right">Qty</th>
+                <th className="th text-center">Buy</th>
+                <th className="th text-center">Sell</th>
               </tr>
             </thead>
             <tbody>
               {rows.map(
-                ({ commodity, listing, owned, qty, inputStr, buyCost, canBuy, canSell, sellValue, buyTooltip, band, dir }) => (
-                  <tr key={commodity.id} className="border-b border-slate-800/60 hover:bg-slate-800/30">
-                    <td className="py-3 pr-4">
+                ({
+                  commodity,
+                  listing,
+                  owned,
+                  qty,
+                  inputStr,
+                  maxBuy,
+                  buyCost,
+                  buyUnit,
+                  canBuy,
+                  canSell,
+                  sellValue,
+                  buyTooltip,
+                  band,
+                  dir,
+                  eventPct,
+                  eventScale,
+                }) => (
+                  <tr key={commodity.id} className="row row-hover">
+                    <td className="td">
                       <div className="flex items-center gap-2">
-                        <span className="text-xl">{commodity.icon}</span>
+                        <span className="text-xl" aria-hidden="true">
+                          {commodity.icon}
+                        </span>
                         <div>
-                          <div className="text-white font-medium">{commodity.name}</div>
-                          <div className="text-xs text-slate-500">{commodity.description}</div>
+                          <div className="flex items-center gap-1.5">
+                            <span className="font-medium text-white">{commodity.name}</span>
+                            {eventPct !== 0 && (
+                              <GameBadge
+                                tone={moveTone(eventScale)}
+                                title="A market event is moving this price"
+                              >
+                                {eventPct > 0 ? '+' : ''}
+                                {eventPct}%
+                              </GameBadge>
+                            )}
+                          </div>
+                          <div className="hidden max-w-[16rem] text-xs text-slate-500 sm:block">
+                            {commodity.description}
+                          </div>
                         </div>
                       </div>
                     </td>
-                    <td className="py-3 pr-4 text-right">
-                      <div className={`font-semibold ${listing ? PRICE_COLOR[band] : 'text-slate-500'}`}>
+                    <td className="td text-right">
+                      {/* Re-keyed on the price so a move re-flashes the cell on the
+                          day it happens rather than once on first paint. */}
+                      <div
+                        key={`${commodity.id}-${listing?.price ?? 0}`}
+                        className={`-mx-1 rounded px-1 font-semibold ${PRICE_COLOR[band]} ${
+                          dir === 'up'
+                            ? 'price-flash-up'
+                            : dir === 'down'
+                              ? 'price-flash-down'
+                              : ''
+                        }`}
+                      >
                         {fmtMoney(listing?.price ?? 0)}
                       </div>
                       {listing && (
                         <div
-                          className={`text-[10px] ${ARROW_COLOR[dir]}`}
+                          className={`num text-[10px] ${ARROW_COLOR[dir]}`}
                           title={
                             dir === 'flat'
                               ? 'unchanged vs yesterday'
-                              : `moved by ${dir === 'up' ? '+' : ''}${fmt(listing.price - listing.prevPrice)} cr vs yesterday`
+                              : `moved by ${dir === 'up' ? '+' : ''}${fmt(
+                                  listing.price - listing.prevPrice,
+                                )} cr vs yesterday`
                           }
                         >
-                          <span className={dir === 'flat' ? 'text-slate-400' : ''}>{ARROW[dir]}</span>{' '}
-                          {listing.price > 0 ? Math.round(((listing.price - listing.prevPrice) / Math.max(1, listing.prevPrice)) * 100) : 0}%
+                          <span>{ARROW[dir]}</span>{' '}
+                          {listing.price > 0
+                            ? Math.round(
+                                ((listing.price - listing.prevPrice) / Math.max(1, listing.prevPrice)) * 100,
+                              )
+                            : 0}
+                          %
                         </div>
                       )}
                     </td>
-                    <td className="py-3 pr-4 text-right text-slate-300">
-                      {listing ? fmt(listing.stock) : '—'}
+                    <td className="td text-right">
+                      <div className="num text-slate-300">{listing ? fmt(listing.stock) : '—'}</div>
+                      {listing && listing.stockMax > 0 && (
+                        <div className="meter ml-auto mt-1 w-12" aria-hidden="true">
+                          <div
+                            className={`meter-fill ${
+                              listing.stock <= listing.stockMax * 0.15
+                                ? 'bg-rose-400'
+                                : listing.stock <= listing.stockMax * 0.4
+                                  ? 'bg-amber-400'
+                                  : 'bg-emerald-400/80'
+                            }`}
+                            style={{ width: `${Math.min(100, (listing.stock / listing.stockMax) * 100)}%` }}
+                          />
+                        </div>
+                      )}
                     </td>
-                    <td className="py-3 pr-4 text-right text-slate-300">
-                      {owned > 0 ? <span className="text-cyan-300 font-semibold">{fmt(owned)}</span> : '0'}
+                    <td className="td text-right">
+                      {owned > 0 ? (
+                        <div>
+                          <div className="num font-semibold text-cyan-200">{fmt(owned)}</div>
+                          <div
+                            className="meter ml-auto mt-1 w-10"
+                            aria-hidden="true"
+                            title={`${fmt(owned)} of ${fmt(cargoUsed(game))} cargo bays`}
+                          >
+                            <div
+                              className="meter-fill bg-cyan-400/70"
+                              style={{
+                                width: `${Math.min(100, (owned / Math.max(1, cargoUsed(game))) * 100)}%`,
+                              }}
+                            />
+                          </div>
+                        </div>
+                      ) : (
+                        <span className="text-slate-600">—</span>
+                      )}
                     </td>
-                    <td className="py-3 pr-4 text-right">
+                    <td className="td text-right">
                       <input
                         type="number"
                         min={1}
                         value={inputStr}
                         onChange={(e) => setQty(commodity.id, e.target.value)}
-                        className="input-sm text-right"
+                        className="input-sm num w-16 text-right sm:w-20"
+                        aria-label={`Quantity of ${commodity.name}`}
                       />
+                      <button
+                        onClick={() => setQty(commodity.id, String(maxBuy > 0 ? maxBuy : 1))}
+                        disabled={maxBuy <= 0}
+                        className="mt-0.5 block w-full text-[9px] uppercase tracking-wider text-slate-500 hover:text-indigo-300 disabled:text-slate-700"
+                        title="Fill in the most you can afford here, and the most this market has"
+                      >
+                        max
+                      </button>
                     </td>
-                    <td className="py-3 pr-4 text-center">
+                    <td className="td text-center">
                       <button
                         onClick={() => handleBuy(commodity.id, qty)}
                         disabled={!canBuy}
                         title={buyTooltip}
-                        className="btn-primary px-3 py-1 text-xs"
+                        className="btn-primary btn-sm w-full"
                       >
                         Buy
                       </button>
-                      <div className="text-[10px] text-slate-500 mt-1">
-                        {canBuy ? `${fmtMoney(buyCost)}` : '—'}
+                      <div className="num mt-1 whitespace-nowrap text-[10px] text-slate-400">
+                        {canBuy ? (
+                          <>
+                            {fmtMoney(buyCost)}
+                            <span className="text-slate-600"> · {fmtMoney(buyUnit)}/u</span>
+                          </>
+                        ) : (
+                          '—'
+                        )}
                       </div>
                     </td>
-                    <td className="py-3 text-center">
+                    <td className="td text-center">
                       <button
                         onClick={() => handleSell(commodity.id, qty)}
                         disabled={!canSell}
                         title={owned === 0 ? 'Nothing to sell' : `Sell ${qty} for ${fmtMoney(sellValue)}`}
-                        className="btn-ghost px-3 py-1 text-xs"
+                        className="btn-ghost btn-sm w-full"
                       >
                         Sell
                       </button>
-                      <div className="text-[10px] text-slate-500 mt-1">
-                        {canSell ? `${fmtMoney(sellValue)}` : '—'}
+                      <div className="num mt-1 whitespace-nowrap text-[10px] text-slate-400">
+                        {canSell ? fmtMoney(sellValue) : '—'}
                       </div>
                     </td>
                   </tr>
@@ -344,8 +363,17 @@ export default function MarketPanel({ game, planet, buy, sell, waitDay }: Market
           </table>
         </div>
 
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-500">
+          <span>
+            Hold: <span className="num text-slate-300">{fmt(used)}</span> of{' '}
+            <span className="num text-slate-300">{fmt(capacity)}</span> bays used
+            {free === 0 ? <span className="ml-1 font-semibold text-rose-300">— FULL</span> : null}
+          </span>
+          <span className="sm:hidden">swipe the table →</span>
+        </div>
+
         {game.credits <= 0 && (
-          <div className="mt-4 p-3 rounded-lg bg-red-900/40 border border-red-700/50 text-red-200 text-sm">
+          <div className="mt-4 rounded-lg border border-rose-700/50 bg-rose-900/40 p-3 text-sm text-rose-200">
             You are out of credits. Sell cargo for some quick cash, or wait a day for
             prices to shift.
           </div>
