@@ -96,6 +96,29 @@ export interface LogEntry {
   text: string
 }
 
+/** One of the temporary market events in `MARKET_EVENTS`. */
+export type MarketEventType = string
+
+/**
+ * A market event happening at one planet on a known span of days.
+ *
+ * Only what cannot be read back out of `eventType` is stored. The name,
+ * description and price modifiers all come from the event's definition, and
+ * no price is stored at all - the event is a multiplier the existing market
+ * calculation applies, so there is exactly one place a price is worked out.
+ *
+ * `id` is derived from (type, planet, startDay) rather than generated, so a
+ * replayed save rebuilds the same ids and the same events.
+ */
+export interface MarketEvent {
+  id: string
+  eventType: MarketEventType
+  planetId: string
+  startDay: number
+  /** The first day the event is *no longer* active. */
+  endDay: number
+}
+
 export interface GameState {
   version: number
   createdAt: number
@@ -107,6 +130,12 @@ export interface GameState {
   cargo: Cargo
   costBasis: Partial<Record<CommodityId, number>>
   markets: Markets
+  /**
+   * Market events currently running anywhere in the sector, newest span
+   * included. Only active events are kept: each is dropped the day after it
+   * expires, so this never grows into a schedule of future events.
+   */
+  activeEvents: MarketEvent[]
   stats: Stats
   log: LogEntry[]
 }

@@ -44,6 +44,9 @@ export function createNewGame(version = GAME_VERSION): GameState {
     cargo: emptyCargo(),
     costBasis: {},
     markets: createMarkets(PLANETS.map((p) => p.id), day),
+    // Day one is a quiet sector: the first event is drawn when the day advances,
+    // so a new game opens on prices the player can reason about.
+    activeEvents: [],
     stats: {
       tradingProfit: 0,
       goodsBought: 0,

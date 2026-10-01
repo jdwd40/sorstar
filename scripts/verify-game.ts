@@ -15,14 +15,28 @@ import {
   waitDay,
 } from '../src/services/marketService'
 import { getTradeLeads } from '../src/services/intelService'
+import {
+  commodityEventScale,
+  eventDaysRemaining,
+  eventMoves,
+  eventsAt,
+  marketEventId,
+  marketEventLogEntries,
+  sectorEvents,
+} from '../src/services/marketEventService'
 import { travel } from '../src/services/travelService'
 import { resumableIdentity } from '../src/services/pocketBaseStore'
 import { migrate } from '../src/services/migrate'
 import { buyUpgrade, describeUpgrade } from '../src/services/playerService'
-import type { Cargo, CommodityId, GameState } from '../src/types/game'
+import type { Cargo, CommodityId, GameState, MarketEvent } from '../src/types/game'
 import {
   COMMODITY_MAP,
+  EVENT_MAX_DAYS,
+  EVENT_MIN_DAYS,
   GAME_VERSION,
+  MARKET_EVENTS,
+  MARKET_EVENT_MAP,
+  MAX_ACTIVE_EVENTS,
   PLANETS,
   PLANET_MAP,
   STARTING_SHIP,
@@ -34,6 +48,8 @@ import {
 } from '../src/data/gameData'
 
 let failures = 0
+/** No market event in force - the multiplier the existing pricing used everywhere. */
+const NO_EVENT = 1
 /** Every commodity at zero, for handing a test a clean hold. */
 const emptyCargo = (): Cargo => {
   const cargo = {} as Cargo
@@ -240,6 +256,49 @@ const rich = () => {
       )
     }
   }
+
+  // The same invariance while a market event is bending the price. Events scale
+  // every unit of the book, so a shock cannot quietly exempt itself from impact
+  // pricing - otherwise an event would make order-splitting profitable again.
+  {
+    const crisis = (): GameState => ({
+      ...rich(),
+      activeEvents: [
+        {
+          id: 'crop-failure@eden#1',
+          eventType: 'crop-failure',
+          planetId: 'eden',
+          startDay: 1,
+          endDay: 6,
+        },
+      ],
+    })
+    const QTY = 100
+    const bulk = buyCommodity(crisis(), 'food', QTY)
+    check(!bulk.error && bulk.state.cargo.food === QTY, 'bulk buy under an event loads the hold')
+    if (!bulk.error) {
+      let chunked = crisis()
+      for (let i = 0; i < QTY; i++) chunked = buyCommodity(chunked, 'food', 1).state
+      const bulkCost = crisis().credits - bulk.state.credits
+      const chunkCost = crisis().credits - chunked.credits
+      check(
+        bulkCost === chunkCost,
+        `buying under an event costs the same in chunks as in bulk (${bulkCost} vs ${chunkCost})`,
+      )
+      const bulkSell = sellCommodity(bulk.state, 'food', QTY)
+      check(!bulkSell.error, 'bulk sell under an event succeeds')
+      if (!bulkSell.error) {
+        let chunkSell = bulk.state
+        for (let i = 0; i < QTY; i++) chunkSell = sellCommodity(chunkSell, 'food', 1).state
+        const bulkProceeds = bulkSell.state.credits - bulk.state.credits
+        const chunkProceeds = chunkSell.credits - bulk.state.credits
+        check(
+          bulkProceeds === chunkProceeds,
+          `selling under an event pays the same in chunks as in bulk (${bulkProceeds} vs ${chunkProceeds})`,
+        )
+      }
+    }
+  }
 }
 
 // 8. buying can no longer inflate net worth. Cargo is marked to cost basis,
@@ -408,20 +467,43 @@ s9 = advanceDay(advanceDay(advanceDay(s9)))
 const leads = getTradeLeads(s9)
 check(leads.length > 0, `intel produced ${leads.length} leads`)
 
-/** Runs one lead end to end and reports what it actually banked. */
-function runLead(state: GameState, lead: ReturnType<typeof getTradeLeads>[number]): number | null {
+/**
+ * Runs one lead end to end and reports what it banked, plus whether a market
+ * event opened or closed at the destination while the ship was in transit.
+ *
+ * Intel may price an event that is already running on the day it quotes a run -
+ * it is visible news - but it must not predict one that starts three days into
+ * a jump. Those runs settle at a price no forecast could have quoted, so they
+ * are counted separately rather than allowed to look like a broken band.
+ */
+function runLead(
+  state: GameState,
+  lead: ReturnType<typeof getTradeLeads>[number],
+): { cash: number; disturbed: boolean } | null {
   const bought = buyCommodity(state, lead.commodityId, lead.runQty)
   if (bought.error) return null
   const arrived = travel(bought.state, lead.targetPlanetId)
   if (arrived.error) return null
   const sold = sellCommodity(arrived.state, lead.commodityId, lead.runQty)
   if (sold.error) return null
+  // The events the forecast could have known about: already running, and still
+  // running on the arrival day.
+  const knownAtArrival = new Set(
+    state.activeEvents
+      .filter((e) => e.planetId === lead.targetPlanetId && e.endDay > arrived.state.day)
+      .map((e) => e.id),
+  )
+  const disturbed = arrived.state.activeEvents.some(
+    (e) => e.planetId === lead.targetPlanetId && !knownAtArrival.has(e.id),
+  )
   // The cash delta from the opening balance already nets out the purchase and
   // the fuel `travel` charged, so it is the run's realised profit directly.
-  return sold.state.credits - START_CREDITS
+  return { cash: sold.state.credits - START_CREDITS, disturbed }
 }
 
 let intelChecked = 0
+let bandChecked = 0
+let disturbedRuns = 0
 let insideBand = 0
 let mismatched = 0
 let quoted = 0
@@ -434,19 +516,34 @@ for (let d = 0; d < 150 && intelChecked < 250; d++) {
     const got = runLead(walk, lead)
     if (got === null) continue
     intelChecked++
+    // Disturbed runs stay in the averages: following the advice produced them,
+    // so they are what the advice is worth on average.
     quoted += lead.runProfit
-    realised += got
+    realised += got.cash
+    if (Math.abs(got.cash - lead.runProfit) > 1) mismatched++
+    if (got.disturbed) {
+      disturbedRuns++
+      continue
+    }
+    bandChecked++
     // No slack: the edges are built from whole-credit totals, so an outcome
     // sitting exactly on an edge is a real outcome, not a rounding artefact.
-    if (got >= lead.worstCase && got <= lead.bestCase) insideBand++
-    if (Math.abs(got - lead.runProfit) > 1) mismatched++
+    if (got.cash >= lead.worstCase && got.cash <= lead.bestCase) insideBand++
   }
   walk = advanceDay(walk)
 }
 check(intelChecked >= 150, `intel forecasts were exercised (${intelChecked} runs)`)
 check(
-  insideBand === intelChecked,
-  `every realised run lands inside its quoted range (${insideBand}/${intelChecked})`,
+  bandChecked >= 150,
+  `the forecast band was exercised (${bandChecked} undisturbed runs)`,
+)
+check(
+  insideBand === bandChecked,
+  `every realised run lands inside its quoted range (${insideBand}/${bandChecked})`,
+)
+check(
+  disturbedRuns <= 12,
+  `a market event opening mid-jump is rare enough to keep the band meaningful (${disturbedRuns}/${intelChecked})`,
 )
 check(
   mismatched > 0 && mismatched < intelChecked,
@@ -811,6 +908,342 @@ check(
   )
 }
 
+// 19. Market events: temporary price shocks, drawn deterministically as days
+//     advance and multiplied into the existing price calculation rather than a
+//     second one.
+{
+  // --- the definitions themselves -------------------------------------------------
+  check(
+    MARKET_EVENTS.length === 10,
+    `there are ${MARKET_EVENTS.length} market event definitions`,
+  )
+  check(
+    MARKET_EVENTS.every((def) => Object.keys(def.modifiers).length > 0),
+    'every event moves at least one commodity',
+  )
+  const swings = MARKET_EVENTS.flatMap((def) => Object.values(def.modifiers))
+  check(
+    swings.length === MARKET_EVENTS.length &&
+      swings.every((m) => (m <= 0.85 && m >= 0.7) || (m >= 1.2 && m <= 1.5)),
+    `every multiplier sits in the cheap (0.70-0.85) or dear (1.20-1.50) band (${swings.join(', ')})`,
+  )
+
+  // --- generation ------------------------------------------------------------------
+  const day1 = createNewGame()
+  /** A state on day 1 with hand-placed events, for checks that must not roll. */
+  const withEvents = (events: MarketEvent[]): GameState => ({ ...day1, activeEvents: events })
+  const forced = (
+    type: string,
+    planetId: string,
+    startDay: number,
+    days: number,
+  ): MarketEvent => ({
+    id: marketEventId(type, planetId, startDay),
+    eventType: type,
+    planetId,
+    startDay,
+    endDay: startDay + days,
+  })
+
+  // A long walk: events must turn up, must not pile up, and must never put two
+  // shocks on one commodity at one planet.
+  const WALK_DAYS = 240
+  let walk = day1
+  let starts = 0
+  let peakActive = 0
+  let overlap = 0
+  let badDuration = 0
+  let mispriced = 0
+  for (let d = 0; d < WALK_DAYS; d++) {
+    const known = new Set(walk.activeEvents.map((e) => e.id))
+    walk = advanceDay(walk)
+    for (const event of walk.activeEvents) {
+      if (!known.has(event.id)) starts++
+      if (event.id !== marketEventId(event.eventType, event.planetId, event.startDay)) {
+        mispriced++
+      }
+      const span = event.endDay - event.startDay
+      if (span < EVENT_MIN_DAYS || span > EVENT_MAX_DAYS) badDuration++
+    }
+    const active = sectorEvents(walk.activeEvents, walk.day)
+    peakActive = Math.max(peakActive, active.length)
+    for (let i = 0; i < active.length; i++) {
+      for (let j = i + 1; j < active.length; j++) {
+        const a = eventMoves(active[i])
+        const b = eventMoves(active[j])
+        if (
+          active[i].planetId === active[j].planetId &&
+          a.some((m) => b.some((n) => n.commodityId === m.commodityId))
+        ) {
+          overlap++
+        }
+      }
+    }
+    // Every re-priced listing must equal what the quote helper charges for one
+    // unit at that day's event scale. This is the whole integration in one
+    // assertion: if an event ever failed to reach the stored price, or reached
+    // it with the wrong multiplier, this drifts.
+    for (const planet of PLANETS) {
+      for (const commodity of Object.values(COMMODITY_MAP)) {
+        const listing = walk.markets[planet.id]?.[commodity.id]
+        if (!listing) continue
+        const scale = commodityEventScale(walk.activeEvents, planet.id, commodity.id, walk.day)
+        if (quoteBuy(planet, commodity, listing, 1, walk.day, scale).cost !== listing.price) {
+          mispriced++
+        }
+      }
+    }
+  }
+  check(starts > 0, `events are generated over ${WALK_DAYS} days (${starts} started)`)
+  const gap = WALK_DAYS / Math.max(1, starts)
+  check(
+    gap >= 2.5 && gap <= 5.5,
+    `roughly one event every 3-5 days (one every ${gap.toFixed(1)})`,
+  )
+  check(
+    peakActive <= MAX_ACTIVE_EVENTS,
+    `no more than ${MAX_ACTIVE_EVENTS} events run at once (peak ${peakActive})`,
+  )
+  check(overlap === 0, 'no two events ever hit the same commodity on one planet')
+  check(badDuration === 0, `every event runs ${EVENT_MIN_DAYS}-${EVENT_MAX_DAYS} days`)
+  check(mispriced === 0, 'event ids are derived and every listing is priced with its event scale')
+
+  // The same save replayed must produce the same events and the same prices.
+  const replayA = Array.from({ length: 120 }).reduce<GameState>((s) => advanceDay(s), day1)
+  const replayB = Array.from({ length: 120 }).reduce<GameState>((s) => advanceDay(s), day1)
+  check(
+    JSON.stringify(replayA.activeEvents) === JSON.stringify(replayB.activeEvents) &&
+      JSON.stringify(replayA.markets) === JSON.stringify(replayB.markets),
+    'the same state replayed twice generates the same events and the same prices',
+  )
+
+  // --- pricing --------------------------------------------------------------------
+  const eden = PLANET_MAP['eden']!
+  const foodListing = day1.markets.eden.food
+  const FOOD_DEAR = MARKET_EVENT_MAP['crop-failure'].modifiers.food as number
+  const normalFood = quoteBuy(eden, COMMODITY_MAP.food, foodListing, 1, day1.day, NO_EVENT).cost
+  const crisisFood = quoteBuy(eden, COMMODITY_MAP.food, foodListing, 1, day1.day, FOOD_DEAR).cost
+  check(
+    Math.abs(crisisFood - normalFood * FOOD_DEAR) <= 1,
+    `a running event scales the price of its own commodity (${normalFood} -> ${crisisFood}, x${FOOD_DEAR})`,
+  )
+const crisis = withEvents([forced('crop-failure', 'eden', day1.day, 4)])
+  check(
+    commodityEventScale(crisis.activeEvents, 'eden', 'food', day1.day) === FOOD_DEAR &&
+      commodityEventScale(crisis.activeEvents, 'eden', 'water', day1.day) === NO_EVENT &&
+      commodityEventScale(crisis.activeEvents, 'korbant', 'food', day1.day) === NO_EVENT,
+    'the event scale applies to its own commodity at its own planet and nowhere else',
+  )
+  // The same walk a real trade takes. Water carries no event, so it must cost
+  // exactly what it cost in the untouched state.
+  const plainWater = buyCommodity(day1, 'water', 1)
+  const crisisWater = buyCommodity(crisis, 'water', 1)
+  check(
+    !plainWater.error &&
+      !crisisWater.error &&
+      plainWater.state.credits === crisisWater.state.credits,
+    'an event leaves every other commodity untouched',
+  )
+
+  const plainBuy = buyCommodity(day1, 'food', 5)
+  const crisisBuy = buyCommodity(crisis, 'food', 5)
+  check(
+    !plainBuy.error && !crisisBuy.error,
+    `a buy succeeds with an event running (${crisisBuy.error ?? 'ok'})`,
+  )
+  if (!plainBuy.error && !crisisBuy.error) {
+    const plainCost = day1.credits - plainBuy.state.credits
+    const crisisCost = crisis.credits - crisisBuy.state.credits
+    check(
+      Math.abs(crisisCost - plainCost * FOOD_DEAR) <= plainCost * FOOD_DEAR * 0.02 + 5,
+      `the charged price carries the event (${plainCost} -> ${crisisCost})`,
+    )
+    check(
+      crisisBuy.state.markets.eden.food.stock === day1.markets.eden.food.stock - 5 &&
+        crisisBuy.state.markets.eden.food.price > day1.markets.eden.food.price,
+      'a buy under an event still moves stock and still moves the price',
+    )
+  }
+
+  // --- lifecycle ------------------------------------------------------------------
+  const twoDays = withEvents([forced('crop-failure', 'eden', day1.day, 2)])
+  const mid = advanceDay(twoDays)
+  check(
+    eventsAt(mid.activeEvents, 'eden', mid.day).length === 1 &&
+      eventDaysRemaining(mid.activeEvents[0], mid.day) === 1,
+    'an event survives a day and reports its days remaining',
+  )
+  const done = advanceDay(mid)
+  check(
+    eventsAt(done.activeEvents, 'eden', done.day).length === 0 &&
+      done.activeEvents.length === 0,
+    'an event is dropped the moment its span ends',
+  )
+  check(
+    commodityEventScale(done.activeEvents, 'eden', 'food', done.day) === NO_EVENT &&
+      quoteBuy(eden, COMMODITY_MAP.food, done.markets.eden.food, 1, done.day, NO_EVENT).cost ===
+        done.markets.eden.food.price,
+    'an expired event no longer touches the price',
+  )
+  // An event that has not begun yet is not active either.
+  const future = withEvents([forced('crop-failure', 'eden', day1.day + 2, 3)])
+  check(
+    commodityEventScale(future.activeEvents, 'eden', 'food', day1.day) === NO_EVENT,
+    'an event that has not started yet changes nothing',
+  )
+  // And one that expired before this save's day is inert from the first read.
+  const stale = withEvents([forced('crop-failure', 'eden', day1.day - 5, 2)])
+  check(
+    commodityEventScale(stale.activeEvents, 'eden', 'food', day1.day) === NO_EVENT,
+    'an event that ended before today changes nothing',
+  )
+
+  // --- travel ---------------------------------------------------------------------
+  // Travel advances days, so it advances event lifetimes: a long event survives a
+  // crossing with fewer days left, and a short one can expire in transit.
+  const longEvent = withEvents([forced('mineral-discovery', 'drax', day1.day, 8)])
+  const arrived = travel(longEvent, 'drax')
+  check(!arrived.error, `travel with an event in flight (${arrived.error ?? 'ok'})`)
+  if (!arrived.error) {
+    const still = eventsAt(arrived.state.activeEvents, 'drax', arrived.state.day)
+    const crossed = arrived.state.day - day1.day
+    check(
+      still.length === 1 && eventDaysRemaining(still[0], arrived.state.day) === 8 - crossed,
+      `a jump burns event days (8 -> ${8 - crossed} after ${crossed} days)`,
+    )
+  }
+  const shortEvent = withEvents([forced('mineral-discovery', 'drax', day1.day, 1)])
+  const expiredInFlight = travel(shortEvent, 'drax')
+  check(
+    !expiredInFlight.error &&
+      eventsAt(expiredInFlight.state.activeEvents, 'drax', expiredInFlight.state.day).length === 0,
+    'an event that runs out mid-jump is gone on arrival',
+  )
+
+  // --- intel ----------------------------------------------------------------------
+  // Intel prices an event it can already see, and only if it will still be
+  // running when the player gets there.
+  const scouted = { ...day1, credits: 1_000_000, ship: { ...day1.ship, cargoLevel: 5 } }
+  const withArray = buyUpgrade(scouted, 'nav')
+  check(
+    withArray.applied === true && withArray.state.ship.navLevel === 1,
+    `intel test setup: a Navigation Array is installed (${withArray.error ?? 'ok'})`,
+  )
+  if (withArray.applied) {
+    const nav = withArray.state
+    // A shortage makes the chosen destination *more* valuable, so the lead keeps
+    // pointing at the same planet and the two quotes describe the same run twice.
+    // A surplus would work the other way and could hand the lead to a different
+    // planet, which would compare two different runs rather than one run twice.
+    const premiumFor = (cid: CommodityId): number | null => {
+      for (const def of MARKET_EVENTS) {
+        const mod = def.modifiers[cid]
+        if (mod !== undefined && mod > 1) return mod
+      }
+      return null
+    }
+    const lead = getTradeLeads(nav).find((l) => premiumFor(l.commodityId) !== null)
+    if (!lead) {
+      check(false, 'intel test setup: a lead exists for a commodity with a shortage event')
+    } else {
+      const PREMIUM = premiumFor(lead.commodityId) as number
+      const shortage = MARKET_EVENTS.find((d) => d.modifiers[lead.commodityId] === PREMIUM)!
+      const arrivalDay = nav.day + lead.travelDays
+      // `endDay` is exclusive, so ending at arrivalDay + 1 is what "still
+      // running on the day you arrive" actually means.
+      const running = {
+        ...nav,
+        activeEvents: [
+          forced(shortage.type, lead.targetPlanetId, nav.day, arrivalDay - nav.day + 1),
+        ],
+      }
+      const shortLead = getTradeLeads(running).find(
+        (l) => l.commodityId === lead.commodityId && l.targetPlanetId === lead.targetPlanetId,
+      )
+      check(
+        !!shortLead &&
+          Math.abs(shortLead.targetPrice - lead.targetPrice * PREMIUM) <=
+            lead.targetPrice * PREMIUM * 0.03,
+        `intel prices a known event at the destination (${lead.commodityId} ${lead.targetPrice.toFixed(1)} -> ${shortLead?.targetPrice.toFixed(1)})`,
+      )
+      check(
+        shortLead !== undefined &&
+          shortLead.worstCase > lead.worstCase &&
+          shortLead.bestCase > lead.bestCase,
+        'the forecast band moves with the event rather than only its midpoint',
+      )
+      // The same event, but ending on the arrival day: not active then, so the
+      // forecast must ignore it entirely.
+      const expiresOnArrival = {
+        ...nav,
+        activeEvents: [
+          forced(shortage.type, lead.targetPlanetId, nav.day, arrivalDay - nav.day),
+        ],
+      }
+      const expiredLead = getTradeLeads(expiresOnArrival).find(
+        (l) => l.commodityId === lead.commodityId && l.targetPlanetId === lead.targetPlanetId,
+      )
+      check(
+        !!expiredLead && expiredLead.targetPrice === lead.targetPrice,
+        `intel ignores an event that ends before you can sell (${expiredLead?.targetPrice.toFixed(1)} vs ${lead.targetPrice.toFixed(1)})`,
+      )
+    }
+  }
+
+  // --- logging --------------------------------------------------------------------
+  const born = marketEventLogEntries([], [forced('crop-failure', 'eden', day1.day, 3)], 'eden', day1.day)
+  const died = marketEventLogEntries(
+    [forced('crop-failure', 'eden', day1.day, 3)],
+    [],
+    'eden',
+    day1.day + 3,
+  )
+  const distant = marketEventLogEntries([], [forced('crop-failure', 'korbant', day1.day, 3)], 'eden', day1.day)
+  check(
+    born.length === 1 && born[0].text.includes('Crop Failure') && born[0].text.includes('+45%'),
+    `an event beginning at the player's planet is logged (${born[0]?.text ?? 'nothing'})`,
+  )
+  check(
+    died.length === 1 && died[0].text.includes('has ended'),
+    `an event ending at the player's planet is logged (${died[0]?.text ?? 'nothing'})`,
+  )
+  check(
+    distant.length === 0,
+    'an event elsewhere in the sector is not logged',
+  )
+
+  // --- save state -----------------------------------------------------------------
+  const v3 = migrate({ ...day1, version: 3 } as unknown as GameState)
+  check(
+    v3.activeEvents.length === 0 && v3.version === GAME_VERSION,
+    `a v3 save migrates to v${GAME_VERSION} with an empty event list`,
+  )
+  const good = forced('mining-strike', 'ironreach', day1.day, 3)
+  const repairedEvents = migrate(
+    asSave({
+      activeEvents: [
+        good,
+        { ...good }, // duplicate id
+        { ...good, id: 'x', planetId: 'nowhere' },
+        { ...good, id: 'y', eventType: 'meteor-shower' },
+        { ...good, id: 'z', endDay: NaN },
+        { ...good, id: 'w', startDay: 9, endDay: 9 },
+        { ...good, id: 'v', startDay: -20, endDay: -18 }, // already over
+      ],
+    }),
+  )
+  check(
+    repairedEvents.activeEvents.length === 1 &&
+      repairedEvents.activeEvents[0].id === good.id &&
+      repairedEvents.activeEvents[0].endDay === good.endDay,
+    `a damaged event list keeps the one usable event (${repairedEvents.activeEvents.length} kept)`,
+  )
+  check(
+    throwsWith({ activeEvents: 'oops' }, 'activeEvents must be an array'),
+    'a structurally impossible activeEvents is reported',
+  )
+}
+
 // Quantity guards. NaN fails every `qty <= 0` and `cost > credits` comparison,
 // so before the fix it sailed straight through and wrote NaN into cargo and
 // cost basis - corruption that would then be saved.
@@ -845,8 +1278,10 @@ check(
 // instead of hanging.
 const home = loaded.planetId
 const market = loaded.markets[home].food
-const buyFor = (n: number) => quoteBuy(PLANET_MAP[home]!, COMMODITY_MAP.food, market, n, loaded.day)
-const sellFor = (n: number) => quoteSell(PLANET_MAP[home]!, COMMODITY_MAP.food, market, n, loaded.day)
+const buyFor = (n: number) =>
+  quoteBuy(PLANET_MAP[home]!, COMMODITY_MAP.food, market, n, loaded.day, NO_EVENT)
+const sellFor = (n: number) =>
+  quoteSell(PLANET_MAP[home]!, COMMODITY_MAP.food, market, n, loaded.day, NO_EVENT)
 check(
   [NaN, Infinity, -Infinity, -3.7].every((n) => buyFor(n).cost === buyFor(0).cost && sellFor(n).proceeds === 0),
   'a quote for a non-finite quantity is zero units, not an unbounded loop',

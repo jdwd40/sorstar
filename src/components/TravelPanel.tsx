@@ -3,6 +3,12 @@ import type { GameState, Planet } from '../types/game'
 import { PLANET_MAP, PLANETS, PLANET_TYPE_META, fuelCostAtLevel } from '../data/gameData'
 import { canTravel, distanceBetween, travelCost } from '../services/travelService'
 import { getTradeLeads } from '../services/intelService'
+import {
+  describeEventMoves,
+  eventDaysRemaining,
+  eventDefinition,
+  sectorEvents,
+} from '../services/marketEventService'
 import { carriedGoods } from '../services/gameService'
 import { fmt, fmtMoney } from '../utils/format'
 import { sound } from '../utils/sound'
@@ -135,7 +141,19 @@ const warpTimersRef = useRef<ReturnType<typeof setTimeout>[]>([])
     return getTradeLeads(game)
   }, [game])
 
+  // A market disruption at a planet is a mark on the chart even without the
+  // Navigation Array: the flag says something is happening, not what.
+  const eventPlanets = useMemo(() => {
+    const ids = new Set<string>()
+    for (const event of sectorEvents(game.activeEvents, game.day)) ids.add(event.planetId)
+    return ids
+  }, [game])
+
   const intelEnabled = game.ship.navLevel >= 1
+  const sectorAlerts = useMemo(
+    () => (intelEnabled ? sectorEvents(game.activeEvents, game.day) : []),
+    [game, intelEnabled],
+  )
   const farthestLy = useMemo(
     () => Math.max(...PLANETS.map((p) => distanceBetween(current, p))),
     [current],
@@ -212,12 +230,19 @@ warpTimersRef.current.forEach(clearTimeout)
           {PLANETS.map((planet) => {
             const isCurrent = planet.id === game.planetId
             const meta = PLANET_TYPE_META[planet.type]
+            const hasEvent = eventPlanets.has(planet.id)
             return (
               <div
                 key={planet.id}
                 role="button"
                 tabIndex={isCurrent ? -1 : 0}
-                aria-label={isCurrent ? `${planet.name}, current location` : `Travel to ${planet.name}`}
+                aria-label={
+                  hasEvent
+                    ? `${planet.name}${isCurrent ? ', current location' : ''}, market alert`
+                    : isCurrent
+                      ? `${planet.name}, current location`
+                      : `Travel to ${planet.name}`
+                }
                 className={`absolute -translate-x-1/2 -translate-y-1/2 flex flex-col items-center group ${
                   isCurrent ? 'z-20' : 'z-10 cursor-pointer'
                 }`}
@@ -238,6 +263,7 @@ warpTimersRef.current.forEach(clearTimeout)
                 <span
                   className={`text-[10px] mt-1 px-1.5 py-0.5 rounded ${isCurrent ? 'bg-indigo-500/60 text-white' : 'bg-slate-800/80 text-slate-300 group-hover:text-white'} whitespace-nowrap`}
                 >
+                  {hasEvent && <span className="text-amber-400">⚠ </span>}
                   {meta.icon} {planet.name}
                 </span>
               </div>
@@ -271,7 +297,14 @@ warpTimersRef.current.forEach(clearTimeout)
                 return (
                   <tr key={planet.id} className="border-b border-slate-800/60 hover:bg-slate-800/30">
                     <td className="py-3 pr-4">
-                      <div className="text-white font-medium">{planet.name}</div>
+                      <div className="text-white font-medium">
+                        {eventPlanets.has(planet.id) && (
+                          <span className="text-amber-400" title="Market event running here">
+                            ⚠{' '}
+                          </span>
+                        )}
+                        {planet.name}
+                      </div>
                       <div className="text-xs text-slate-500 line-clamp-1">{planet.description}</div>
                     </td>
                     <td className="py-3 pr-4 text-right">
@@ -314,74 +347,109 @@ warpTimersRef.current.forEach(clearTimeout)
             Without a Navigation Array your astrogation charts only plot routes, not
             prices. Upgrade your ship to see the best buy-to-sell runs.
           </p>
-        ) : intel.length === 0 ? (
-          <p className="text-sm text-slate-400">
-            No profitable runs detected from this planet right now. Try a different
-            market or wait a day for prices to shift.
-          </p>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-left text-slate-400 border-b border-slate-700">
-                  <th className="py-2 pr-4">Good</th>
-                  <th className="py-2 pr-4">Buy Here</th>
-                  <th
-                    className="py-2 pr-4"
-                    title="A forecast range, not a quote. The destination re-prices while you are in transit and you cannot see where it opens."
-                  >
-                    Sell At (est.)
-                  </th>
-                  <th className="py-2 pr-4 text-right">Spread</th>
-                  <th className="py-2 text-right">Expected</th>
-                </tr>
-              </thead>
-              <tbody>
-                {intel.map((lead) => (
-                  <tr key={lead.commodityId} className="border-b border-slate-800/60">
-                    <td className="py-2 pr-4">
-                      <span className="font-medium text-white">
-                        {lead.icon} {lead.commodityName}
-                      </span>
-                      {lead.holding > 0 && (
-                        <span className="ml-2 text-xs text-cyan-300">holding {lead.holding}</span>
-                      )}
-                    </td>
-                    <td className="py-2 pr-4 text-emerald-400">
-                      {lead.originPlanetName} · {fmtMoney(lead.originPrice)}
-                    </td>
-                    <td className="py-2 pr-4 text-amber-300">
-                      {lead.targetPlanetName} · {fmtMoney(lead.sellPriceLow)}–
-                      {fmtMoney(lead.sellPriceHigh)}
-                    </td>
-                    <td className="py-2 pr-4 text-right text-white font-semibold">
-                      +{fmtMoney(lead.spread)}
-                    </td>
-                    <td className="py-2 text-right">
-                      <span
-                        className="font-semibold text-emerald-400"
-                        title="Expected profit: the arrival price is a forecast, so this is a fair average over where the market could open."
-                      >
-                        +{fmtMoney(lead.runProfit)}
-                      </span>
-                      <div className="text-[10px] text-slate-500">
-                        expected · load {lead.runQty} units · arrives in {lead.travelDays} day
-                        {lead.travelDays > 1 ? 's' : ''}
+          <div className="space-y-4">
+            {/* Sector-wide, and only with the array: the flag on the chart is the
+                un-upgraded player's only warning that a market is off-normal, and
+                it deliberately says nothing about which good or by how much. */}
+            {sectorAlerts.length > 0 && (
+              <div>
+                <h4 className="text-xs uppercase tracking-wider text-amber-300 mb-2">
+                  Sector Market Alerts
+                </h4>
+                <div className="space-y-1">
+                  {sectorAlerts.map((event) => {
+                    const days = eventDaysRemaining(event, game.day)
+                    return (
+                      <div key={event.id} className="flex items-center justify-between text-sm gap-3">
+                        <span className="text-white">
+                          {PLANET_MAP[event.planetId]?.name ?? event.planetId} —{' '}
+                          {eventDefinition(event)?.name ?? event.eventType}
+                        </span>
+                        <span className="text-slate-300 whitespace-nowrap">
+                          {describeEventMoves(event)}
+                          <span className="text-slate-500">
+                            {' '}
+                            · {days} day{days === 1 ? '' : 's'}
+                          </span>
+                        </span>
                       </div>
-                      {/* The downside is stated, not buried: a lead can still
-                          land in the red if the market opens against you. */}
-                      <div
-                        className={`text-[10px] ${
-                          lead.worstCase < 0 ? 'text-rose-400/80' : 'text-slate-500'
-                        }`}
+                    )
+                  })}
+                </div>
+              </div>
+            )}
+
+            {intel.length === 0 ? (
+              <p className="text-sm text-slate-400">
+                No profitable runs detected from this planet right now. Try a different
+                market or wait a day for prices to shift.
+              </p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-left text-slate-400 border-b border-slate-700">
+                      <th className="py-2 pr-4">Good</th>
+                      <th className="py-2 pr-4">Buy Here</th>
+                      <th
+                        className="py-2 pr-4"
+                        title="A forecast range, not a quote. The destination re-prices while you are in transit and you cannot see where it opens."
                       >
-                        worst case {fmtMoney(lead.worstCase)}
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+                        Sell At (est.)
+                      </th>
+                      <th className="py-2 pr-4 text-right">Spread</th>
+                      <th className="py-2 text-right">Expected</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {intel.map((lead) => (
+                      <tr key={lead.commodityId} className="border-b border-slate-800/60">
+                        <td className="py-2 pr-4">
+                          <span className="font-medium text-white">
+                            {lead.icon} {lead.commodityName}
+                          </span>
+                          {lead.holding > 0 && (
+                            <span className="ml-2 text-xs text-cyan-300">holding {lead.holding}</span>
+                          )}
+                        </td>
+                        <td className="py-2 pr-4 text-emerald-400">
+                          {lead.originPlanetName} · {fmtMoney(lead.originPrice)}
+                        </td>
+                        <td className="py-2 pr-4 text-amber-300">
+                          {lead.targetPlanetName} · {fmtMoney(lead.sellPriceLow)}–
+                          {fmtMoney(lead.sellPriceHigh)}
+                        </td>
+                        <td className="py-2 pr-4 text-right text-white font-semibold">
+                          +{fmtMoney(lead.spread)}
+                        </td>
+                        <td className="py-2 text-right">
+                          <span
+                            className="font-semibold text-emerald-400"
+                            title="Expected profit: the arrival price is a forecast, so this is a fair average over where the market could open."
+                          >
+                            +{fmtMoney(lead.runProfit)}
+                          </span>
+                          <div className="text-[10px] text-slate-500">
+                            expected · load {lead.runQty} units · arrives in {lead.travelDays} day
+                            {lead.travelDays > 1 ? 's' : ''}
+                          </div>
+                          {/* The downside is stated, not buried: a lead can still
+                              land in the red if the market opens against you. */}
+                          <div
+                            className={`text-[10px] ${
+                              lead.worstCase < 0 ? 'text-rose-400/80' : 'text-slate-500'
+                            }`}
+                          >
+                            worst case {fmtMoney(lead.worstCase)}
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
         )}
       </div>

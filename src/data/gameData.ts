@@ -1,6 +1,7 @@
 import type {
   Commodity,
   CommodityId,
+  MarketEventType,
   Planet,
   PlanetType,
   Ship,
@@ -8,7 +9,7 @@ import type {
 } from '../types/game'
 
 export const GAME_TARGET_NET_WORTH = 100_000
-export const GAME_VERSION = 3
+export const GAME_VERSION = 4
 export const STARTING_CREDITS = 1200
 export const STARTING_PLANET = 'eden'
 // Deliberately still "v2": the key names the *save*, not the schema, and
@@ -235,6 +236,113 @@ export const PLANET_TYPE_META: Record<PlanetType, { icon: string; color: string 
   wealthy: { icon: '🏛️', color: 'text-violet-400' },
   frontier: { icon: '🚀', color: 'text-orange-400' },
 }
+
+/**
+ * A temporary market disruption. `modifiers` multiply the market's price for
+ * the listed commodities while the event runs.
+ *
+ * Multipliers are kept between 0.70 and 1.50 on purpose. Events are meant to
+ * open a short window to act on, not to print money: a swing much larger than
+ * the daily drift would make a route worth taking or avoiding almost by
+ * itself, and the player's own order impact would be a rounding error against
+ * it.
+ */
+export interface MarketEventDefinition {
+  type: MarketEventType
+  name: string
+  description: string
+  modifiers: Partial<Record<CommodityId, number>>
+}
+
+export const MARKET_EVENTS: MarketEventDefinition[] = [
+  {
+    type: 'crop-failure',
+    name: 'Crop Failure',
+    description: 'Blight has taken the harvests. Food is suddenly scarce.',
+    modifiers: { food: 1.45 },
+  },
+  {
+    type: 'bumper-harvest',
+    name: 'Bumper Harvest',
+    description: 'The fields have never looked better. Food is glutted.',
+    modifiers: { food: 0.75 },
+  },
+  {
+    type: 'water-shortage',
+    name: 'Water Shortage',
+    description: 'Aquifers are running dry and every tanker is spoken for.',
+    modifiers: { water: 1.45 },
+  },
+  {
+    type: 'fuel-crisis',
+    name: 'Fuel Crisis',
+    description: 'Refinery output is down sector-wide. Fuel commands a premium.',
+    modifiers: { fuel: 1.35 },
+  },
+  {
+    type: 'mining-strike',
+    name: 'Mining Strike',
+    description: 'The pits are picket-lined. Metals are not moving.',
+    modifiers: { metals: 1.4 },
+  },
+  {
+    type: 'mineral-discovery',
+    name: 'Mineral Discovery',
+    description: 'A rich seam has been mapped. Metals are flooding the market.',
+    modifiers: { metals: 0.75 },
+  },
+  {
+    type: 'technology-expo',
+    name: 'Technology Expo',
+    description: 'Exhibitors are dumping surplus components. Electronics are cheap.',
+    modifiers: { electronics: 0.8 },
+  },
+  {
+    type: 'medical-emergency',
+    name: 'Medical Emergency',
+    description: 'An outbreak has emptied the shelves. Medicine is rationed.',
+    modifiers: { medicine: 1.45 },
+  },
+  {
+    type: 'luxury-festival',
+    name: 'Luxury Festival',
+    description: 'The season has opened and everyone wants the good life.',
+    modifiers: { luxury: 1.35 },
+  },
+  {
+    type: 'crystal-discovery',
+    name: 'Crystal Discovery',
+    description: 'A new crystal bed has been cut. Rare Crystals are cheap.',
+    modifiers: { crystals: 0.75 },
+  },
+]
+
+export const MARKET_EVENT_MAP: Record<string, MarketEventDefinition> = MARKET_EVENTS.reduce(
+  (acc, e) => {
+    acc[e.type] = e
+    return acc
+  },
+  {} as Record<string, MarketEventDefinition>,
+)
+
+/**
+ * Ceiling on events running anywhere in the sector at once.
+ *
+ * A handful, so an alert still means something: a screen full of them would
+ * make every route unusual and no route worth acting on.
+ */
+export const MAX_ACTIVE_EVENTS = 3
+
+/**
+ * Chance a new event starts on a given day, out of 100. A flat roll, not a
+ * guarantee - the target is roughly one event somewhere in the sector every
+ * 3-5 days, and days that roll nothing simply have no event.
+ */
+export const EVENT_SPAWN_CHANCE_PERCENT = 25
+
+/** Events run for 3-8 days: long enough to cross a short hop, short enough to matter. */
+export const EVENT_MIN_DAYS = 3
+export const EVENT_MAX_DAYS = 8
 
 interface CargoTier {
   level: number

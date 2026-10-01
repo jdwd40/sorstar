@@ -1,5 +1,12 @@
-import type { CommodityId, GameState, MarketListing, Stats } from '../types/game'
-import { COMMODITY_MAP, GAME_VERSION, PLANETS, PLANET_MAP } from '../data/gameData'
+import type { CommodityId, GameState, MarketEvent, MarketListing, Stats } from '../types/game'
+import {
+  COMMODITY_MAP,
+  GAME_VERSION,
+  MARKET_EVENT_MAP,
+  PLANETS,
+  PLANET_MAP,
+} from '../data/gameData'
+import { marketEventId } from './marketEventService'
 
 function assertNumber(v: unknown, label: string): asserts v is number {
   if (typeof v !== 'number' || !Number.isFinite(v)) throw new Error(`Corrupt save: ${label} must be a number`)
@@ -119,6 +126,9 @@ function assertModel(raw: GameState): void {
   if (raw.costBasis !== undefined && (raw.costBasis === null || typeof raw.costBasis !== 'object')) {
     throw new Error('Corrupt save: costBasis must be an object')
   }
+  if (raw.activeEvents !== undefined && !Array.isArray(raw.activeEvents)) {
+    throw new Error('Corrupt save: activeEvents must be an array')
+  }
   assertNumber(raw.ship.cargoLevel, 'ship.cargoLevel')
   assertNumber(raw.ship.engineLevel, 'ship.engineLevel')
   assertNumber(raw.ship.navLevel, 'ship.navLevel')
@@ -152,7 +162,7 @@ export function migrate(raw: GameState): GameState {
     }
   }
 
-  if (state.version < GAME_VERSION) {
+  if (state.version < 3) {
     // v3: `totalProfit` was renamed `tradingProfit`. The number did not change
     // - it has always been realised trading profit only - but the old name
     // invited it to be read as money made, so it is carried forward under a
@@ -171,7 +181,14 @@ export function migrate(raw: GameState): GameState {
     } else if (!('tradingProfit' in legacy)) {
       state = { ...state, stats: { ...state.stats, tradingProfit: 0 } }
     }
-    state = { ...state, version: GAME_VERSION }
+    state = { ...state, version: 3 }
+  }
+
+  if (state.version < GAME_VERSION) {
+    // v4: market events. Older saves have none, which is a truthful reading of
+    // the sector rather than lost progress: events are drawn as days advance,
+    // so the next day fills this back in on its own.
+    state = { ...state, activeEvents: [], version: GAME_VERSION }
   }
 
   // Self-healing pass. Runs on every load, not just version upgrades, because
@@ -195,6 +212,7 @@ export function migrate(raw: GameState): GameState {
     // listing missing it (or holding a non-number) renders "NaN%" next to a
     // price, so fall back to treating the price as unchanged.
     markets: repairPrevPrices(state.markets),
+    activeEvents: cleanEvents(state.activeEvents, state.day),
     stats: {
       ...stats,
       tradingProfit: statOr(stats.tradingProfit, 0, 'tradingProfit'),
@@ -223,6 +241,46 @@ function repairPrevPrices(markets: GameState['markets']): GameState['markets'] {
       }
     }
     out[planetId] = fixed as GameState['markets'][string]
+  }
+  return out
+}
+
+/**
+ * Market events that can still be acted on.
+ *
+ * An event is only load-bearing if it names a real planet and a real event
+ * type over a usable span; anything else would either move no price or move it
+ * forever. Each entry is independent, so one damaged event costs that event and
+ * nothing else. Events that had already expired by the save's day are dropped
+ * too - they are gone from the markets either way, and keeping them would grow
+ * the save every load.
+ */
+function cleanEvents(events: unknown, day: number): MarketEvent[] {
+  if (!Array.isArray(events)) return []
+  const out: MarketEvent[] = []
+  const seen = new Set<string>()
+  for (const raw of events) {
+    if (!raw || typeof raw !== 'object') continue
+    const event = raw as Partial<MarketEvent>
+    if (typeof event.eventType !== 'string' || !MARKET_EVENT_MAP[event.eventType]) continue
+    if (typeof event.planetId !== 'string' || !PLANET_MAP[event.planetId]) continue
+    const startDay = wholeOrUndef(event.startDay)
+    const endDay = wholeOrUndef(event.endDay)
+    if (startDay === undefined || endDay === undefined || endDay <= startDay) continue
+    if (endDay <= day) continue
+    // Ids are derived, so a missing or duplicated one is rebuilt rather than
+    // trusted: a doubled id would make a single event look like it both began
+    // and ended, and log both.
+    const id = marketEventId(event.eventType, event.planetId, startDay)
+    if (seen.has(id)) continue
+    seen.add(id)
+    out.push({
+      id,
+      eventType: event.eventType,
+      planetId: event.planetId,
+      startDay,
+      endDay,
+    })
   }
   return out
 }

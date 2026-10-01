@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import type { CommodityId, GameState, ShipUpgradeType } from '../types/game'
 import { createGameStore, type AuthUser, type GameStore, type SessionLostReason } from '../services/gameStore'
 import { buyCommodity, cargoBasisAt, sellCommodity, waitDay as waitDayService } from '../services/marketService'
+import { marketEventLogEntries } from '../services/marketEventService'
 import { travel as travelService, type TravelResult } from '../services/travelService'
 import { buyUpgrade, describeUpgrade } from '../services/playerService'
 import { createNewGame, netWorth, withLog } from '../services/gameService'
@@ -275,7 +276,20 @@ const apply = useCallback(
     const result = run(before)
     if (result.error) return { ok: false, message: result.error }
     const { icon, text } = log(before, result.state, result)
-    commit(withLog(result.state, icon, text))
+    // Market events turn over as part of the same action, so they are logged
+    // alongside it rather than by each caller. Scoped to the planet the player
+    // ends up at, which is what keeps a long jump from reporting on every
+    // disruption that opened and closed in the sector behind them.
+    let next = withLog(result.state, icon, text)
+    for (const entry of marketEventLogEntries(
+      before.activeEvents,
+      result.state.activeEvents,
+      result.state.planetId,
+      result.state.day,
+    )) {
+      next = withLog(next, entry.icon, entry.text)
+    }
+    commit(next)
     const { message, info } = done(result.state, result)
     return info ? { ok: true, message, info } : { ok: true, message }
   },

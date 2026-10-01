@@ -1,6 +1,7 @@
 import type { CommodityId, GameState } from '../types/game'
 import { COMMODITY_MAP, PLANETS, PLANET_MAP, cargoCapacityAtLevel } from '../data/gameData'
 import { DAILY_PRICE_DRIFT, projectStock, quoteBuy, quoteSellForecast } from './marketService'
+import { commodityEventScale } from './marketEventService'
 import { distanceBetween, travelCost } from './travelService'
 
 export interface TradeLead {
@@ -73,6 +74,10 @@ function computeTradeLeads(state: GameState): TradeLead[] {
   const capacity = cargoCapacityAtLevel(state.ship.cargoLevel)
   const cargoUsed = Object.values(state.cargo).reduce((sum, q) => sum + q, 0)
   const freeSpace = Math.max(0, capacity - cargoUsed)
+  const events = state.activeEvents
+  // The origin's own market, priced today: an event running here is part of
+  // what the run starts from.
+  const originScale = (id: CommodityId) => commodityEventScale(events, state.planetId, id, state.day)
 
   const leads: TradeLead[] = []
 
@@ -105,6 +110,7 @@ function computeTradeLeads(state: GameState): TradeLead[] {
       // remaining credits still have to cover the fuel for THIS destination.
       const budget = state.credits - travel
       const cap = Math.min(freeSpace, listing.stock)
+      const hereScale = originScale(commodity.id)
 
       // The buy price rises with every unit drained from the origin, so the
       // largest affordable load is found by bisection rather than a single
@@ -113,17 +119,29 @@ function computeTradeLeads(state: GameState): TradeLead[] {
       let hi = cap
       while (lo < hi) {
         const mid = Math.ceil((lo + hi) / 2)
-        if (quoteBuy(currentPlanet, commodity, listing, mid, state.day).cost <= budget) lo = mid
+        if (quoteBuy(currentPlanet, commodity, listing, mid, state.day, hereScale).cost <= budget) lo = mid
         else hi = mid - 1
       }
       const runQty = lo
       if (runQty <= 0) continue
 
-      const buyQuote = quoteBuy(currentPlanet, commodity, listing, runQty, state.day)
+      const buyQuote = quoteBuy(currentPlanet, commodity, listing, runQty, state.day, hereScale)
       // The destination re-prices once per day of travel, so quote the market
       // as it will actually stand on arrival - then apply the impact of
       // dumping the load into it, since `sellCommodity` prices the same way.
       const onArrival = { ...sellListing, stock: projectStock(sellListing, days) }
+
+      // A market event the player can already see is known news, so it goes
+      // into the forecast rather than the band - but only if it is still
+      // running on the arrival day. One that expires in transit is not, and
+      // pricing it in would promise a shortage that has already ended. Events
+      // that have not started yet are not knowable, and are not predicted.
+      const arrivalScale = commodityEventScale(
+        events,
+        planet.id,
+        commodity.id,
+        state.day + days,
+      )
 
       // Forecast, not a quote. `quoteSell` knows the arrival price exactly,
       // because the day's drift is a pure function of (planet, commodity, day)
@@ -131,9 +149,23 @@ function computeTradeLeads(state: GameState): TradeLead[] {
       // turned the Navigation Array into a calculator. The forecast prices the
       // destination on its structural value, which is the expectation, and
       // brackets it with the drift it cannot see.
-      const forecast = quoteSellForecast(planet, commodity, onArrival, runQty)
-      const low = quoteSellForecast(planet, commodity, onArrival, runQty, 1 - DAILY_PRICE_DRIFT)
-      const high = quoteSellForecast(planet, commodity, onArrival, runQty, 1 + DAILY_PRICE_DRIFT)
+      const forecast = quoteSellForecast(planet, commodity, onArrival, runQty, 1, arrivalScale)
+      const low = quoteSellForecast(
+        planet,
+        commodity,
+        onArrival,
+        runQty,
+        1 - DAILY_PRICE_DRIFT,
+        arrivalScale,
+      )
+      const high = quoteSellForecast(
+        planet,
+        commodity,
+        onArrival,
+        runQty,
+        1 + DAILY_PRICE_DRIFT,
+        arrivalScale,
+      )
       const sell = forecast.unitPrice
 
       // Net is taken from the whole-credit totals rather than from the average

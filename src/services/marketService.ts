@@ -2,20 +2,14 @@ import type {
   Commodity,
   CommodityId,
   GameState,
+  MarketEvent,
   MarketListing,
   Markets,
   Planet,
 } from '../types/game'
 import { COMMODITY_MAP, PLANET_MAP, cargoCapacityAtLevel, dailyUpkeep } from '../data/gameData'
-
-function hashString(str: string): number {
-  let hash = 2166136261
-  for (let i = 0; i < str.length; i++) {
-    hash ^= str.charCodeAt(i)
-    hash = Math.imul(hash, 16777619)
-  }
-  return hash >>> 0
-}
+import { advanceMarketEvents, commodityEventScale } from './marketEventService'
+import { hashString } from '../utils/hash'
 
 /**
  * How far a market's daily re-pricing may sit either side of its structural
@@ -67,8 +61,11 @@ function regenerateStock(stock: number, baseStock: number, stockMax: number): nu
 
 /**
  * Memoised market prices. A price depends only on (planet, commodity, day,
- * stock), and the fill walks query long runs of adjacent stock levels on every
- * quote, so this turns a per-render O(quantity) walk into a cache hit.
+ * stock, event scale), and the fill walks query long runs of adjacent stock
+ * levels on every quote, so this turns a per-render O(quantity) walk into a
+ * cache hit. The event scale is part of the key because it is a genuine input
+ * to the price, not metadata - a cache hit across it would price a market mid
+ * crop failure at its normal rate.
  */
 const priceCache = new Map<string, number>()
 
@@ -87,14 +84,25 @@ function structuralPrice(
   return commodity.basePrice * factor
 }
 
+/**
+ * The full price: base × planet appetite × scarcity × the day's draw × any
+ * active market event.
+ *
+ * The event multiplier is the last factor, which is what keeps it a modifier on
+ * the existing calculation rather than a second pricing system: it rides every
+ * fill, every quote and every forecast through the same one path.
+ */
 function rawPrice(
   planet: Planet,
   commodity: Commodity,
   listing: MarketListing,
   day: number,
+  eventScale: number,
 ): number {
   return (
-    structuralPrice(planet, commodity, listing) * randomFactor(planet.id, commodity.id, day)
+    structuralPrice(planet, commodity, listing) *
+    randomFactor(planet.id, commodity.id, day) *
+    eventScale
   )
 }
 
@@ -103,14 +111,15 @@ function marketPrice(
   commodity: Commodity,
   listing: MarketListing,
   day: number,
+  eventScale: number,
 ): number {
-  const key = `${planet.id}|${commodity.id}|${day}|${listing.stock}`
+  const key = `${planet.id}|${commodity.id}|${day}|${listing.stock}|${eventScale}`
   const hit = priceCache.get(key)
   if (hit !== undefined) return hit
-  const price = Math.max(1, Math.round(rawPrice(planet, commodity, listing, day)))
+  const price = Math.max(1, Math.round(rawPrice(planet, commodity, listing, day, eventScale)))
   // Bounded so a long session cannot grow this without limit. Prices are a pure
-  // function of (planet, commodity, day, stock), so dropping entries is always
-  // safe - it only costs recomputation.
+  // function of (planet, commodity, day, stock, event scale), so dropping
+  // entries is always safe - it only costs recomputation.
   if (priceCache.size > 20000) priceCache.clear()
   priceCache.set(key, price)
   return price
@@ -127,7 +136,11 @@ export function priceDirection(listing: MarketListing): 'up' | 'down' | 'flat' {
   return 'flat'
 }
 
-function createPlanetMarket(planet: Planet, day: number): Record<CommodityId, MarketListing> {
+function createPlanetMarket(
+  planet: Planet,
+  day: number,
+  events: readonly MarketEvent[],
+): Record<CommodityId, MarketListing> {
   const result = {} as Record<CommodityId, MarketListing>
   for (const commodity of Object.values(COMMODITY_MAP)) {
     const mod = Math.max(0.4, planet.priceMods[commodity.id])
@@ -138,19 +151,29 @@ function createPlanetMarket(planet: Planet, day: number): Record<CommodityId, Ma
     const stockMax = Math.min(2000, Math.round(baseStock * 1.5))
     const stock = stockMax
     const listing: MarketListing = { price: 0, prevPrice: 0, stock, stockMax, baseStock }
-    listing.price = marketPrice(planet, commodity, listing, day)
+    listing.price = marketPrice(
+      planet,
+      commodity,
+      listing,
+      day,
+      commodityEventScale(events, planet.id, commodity.id, day),
+    )
     listing.prevPrice = listing.price
     result[commodity.id] = listing
   }
   return result
 }
 
-export function createMarkets(planetIds: string[], day: number): Markets {
+export function createMarkets(
+  planetIds: string[],
+  day: number,
+  events: readonly MarketEvent[] = [],
+): Markets {
   const markets: Markets = {}
   for (const pid of planetIds) {
     const planet = PLANET_MAP[pid]
     if (!planet) continue
-    markets[pid] = createPlanetMarket(planet, day)
+    markets[pid] = createPlanetMarket(planet, day, events)
   }
   return markets
 }
@@ -160,11 +183,18 @@ function refreshPrice(
   planetId: string,
   commodityId: CommodityId,
   day: number,
+  events: readonly MarketEvent[],
 ): void {
   const planet = PLANET_MAP[planetId]
   const listing = market[commodityId]
   if (!planet || !listing) return
-  listing.price = marketPrice(planet, COMMODITY_MAP[commodityId], listing, day)
+  listing.price = marketPrice(
+    planet,
+    COMMODITY_MAP[commodityId],
+    listing,
+    day,
+    commodityEventScale(events, planetId, commodityId, day),
+  )
 }
 
 type Pricer = (level: MarketListing) => number
@@ -232,8 +262,13 @@ function sellFill(listing: MarketListing, qty: number, priceAt: Pricer): { proce
 }
 
 /** Prices a book level with the day's actual draw - what a trade really fills at. */
-function livePricer(planet: Planet, commodity: Commodity, day: number): Pricer {
-  return (level) => marketPrice(planet, commodity, level, day)
+function livePricer(
+  planet: Planet,
+  commodity: Commodity,
+  day: number,
+  eventScale: number,
+): Pricer {
+  return (level) => marketPrice(planet, commodity, level, day, eventScale)
 }
 
 /**
@@ -242,10 +277,18 @@ function livePricer(planet: Planet, commodity: Commodity, day: number): Pricer {
  * The draw is a single multiplier applied to every fill in the trade, so
  * scaling the whole structural curve by it reproduces that day's proceeds
  * exactly. That is what makes the forecast band honest at the extremes rather
- * than a guess about how impact interacts with drift.
+ * than a guess about how impact interacts with drift. An active event is scaled
+ * in the same way, and for the same reason: it too is one multiplier on the
+ * whole book.
  */
-function forecastPricer(planet: Planet, commodity: Commodity, driftScale: number): Pricer {
-  return (level) => Math.max(1, Math.round(structuralPrice(planet, commodity, level) * driftScale))
+function forecastPricer(
+  planet: Planet,
+  commodity: Commodity,
+  driftScale: number,
+  eventScale: number,
+): Pricer {
+  return (level) =>
+    Math.max(1, Math.round(structuralPrice(planet, commodity, level) * driftScale * eventScale))
 }
 
 /**
@@ -279,13 +322,15 @@ export function quoteBuy(
   listing: MarketListing,
   qty: number,
   day: number,
+  eventScale: number,
 ): { unitPrice: number; cost: number; price: number; stock: number } {
   const units = wholeUnits(qty)
-  const { cost, stock } = buyFill(listing, units, livePricer(planet, commodity, day))
+  const { cost, stock } = buyFill(listing, units, livePricer(planet, commodity, day, eventScale))
   return {
-    unitPrice: units > 0 ? cost / units : marketPrice(planet, commodity, listing, day),
+    unitPrice:
+      units > 0 ? cost / units : marketPrice(planet, commodity, listing, day, eventScale),
     cost,
-    price: marketPrice(planet, commodity, { ...listing, stock }, day),
+    price: marketPrice(planet, commodity, { ...listing, stock }, day, eventScale),
     stock,
   }
 }
@@ -298,16 +343,25 @@ export function quoteBuy(
  * Routing intel through here instead is what stops the Navigation Array from
  * being a solver - the player sees the trend, not the outcome. Pass a
  * `driftScale` of `1 -/+ DAILY_PRICE_DRIFT` for the band's edges.
+ *
+ * `eventScale` is deliberately not part of the uncertainty. A market event the
+ * player can already see is known news, so it belongs in the forecast; the
+ * drift is not observable until arrival, so it stays bracketed.
  */
 export function quoteSellForecast(
   planet: Planet,
   commodity: Commodity,
   listing: MarketListing,
   qty: number,
-  driftScale = 1,
+  driftScale: number,
+  eventScale: number,
 ): { unitPrice: number; proceeds: number } {
   const units = wholeUnits(qty)
-  const { proceeds } = sellFill(listing, units, forecastPricer(planet, commodity, driftScale))
+  const { proceeds } = sellFill(
+    listing,
+    units,
+    forecastPricer(planet, commodity, driftScale, eventScale),
+  )
   return { unitPrice: units > 0 ? proceeds / units : 0, proceeds }
 }
 
@@ -323,13 +377,15 @@ export function quoteSell(
   listing: MarketListing,
   qty: number,
   day: number,
+  eventScale: number,
 ): { unitPrice: number; proceeds: number; price: number; stock: number } {
   const units = wholeUnits(qty)
-  const { proceeds, stock } = sellFill(listing, units, livePricer(planet, commodity, day))
+  const { proceeds, stock } = sellFill(listing, units, livePricer(planet, commodity, day, eventScale))
   return {
-    unitPrice: units > 0 ? proceeds / units : marketPrice(planet, commodity, listing, day),
+    unitPrice:
+      units > 0 ? proceeds / units : marketPrice(planet, commodity, listing, day, eventScale),
     proceeds,
-    price: marketPrice(planet, commodity, { ...listing, stock }, day),
+    price: marketPrice(planet, commodity, { ...listing, stock }, day, eventScale),
     stock,
   }
 }
@@ -359,7 +415,14 @@ export function saleValue(
   if (!listing || !planet) return 0
   const units = wholeUnits(qty)
   if (units <= 0) return 0
-  return quoteSell(planet, COMMODITY_MAP[commodityId], listing, units, state.day).proceeds
+  return quoteSell(
+    planet,
+    COMMODITY_MAP[commodityId],
+    listing,
+    units,
+    state.day,
+    commodityEventScale(state.activeEvents, state.planetId, commodityId, state.day),
+  ).proceeds
 }
 
 /**
@@ -402,7 +465,15 @@ export function buyCommodity(
   // what moves the price, and the buyer caused that move. `sellCommodity`
   // already worked this way, so this only removes the asymmetry.
   const commodity = COMMODITY_MAP[commodityId]
-  const { unitPrice, cost, price, stock } = quoteBuy(planet, commodity, listing, qty, state.day)
+  const eventScale = commodityEventScale(state.activeEvents, state.planetId, commodityId, state.day)
+  const { unitPrice, cost, price, stock } = quoteBuy(
+    planet,
+    commodity,
+    listing,
+    qty,
+    state.day,
+    eventScale,
+  )
   if (cost > state.credits) return { state, error: `Not enough credits (need ${cost}).` }
 
   const ownedBefore = state.cargo[commodityId]
@@ -456,6 +527,7 @@ export function sellCommodity(
     listing,
     qty,
     state.day,
+    commodityEventScale(state.activeEvents, state.planetId, commodityId, state.day),
   )
   const basis = cargoBasisAt(state, commodityId)
   const profit = proceeds - basis * qty
@@ -489,6 +561,11 @@ export function sellCommodity(
 
 export function advanceDay(state: GameState): GameState {
   const day = state.day + 1
+  // Events turn over before prices are recomputed, so a market is priced
+  // against the events running on the day the player is actually looking at:
+  // something that expired yesterday is not in tomorrow's price, and something
+  // that began today is.
+  const events = advanceMarketEvents(state.activeEvents, day)
   const nextMarkets: Markets = {}
   for (const [planetId, record] of Object.entries(state.markets)) {
     const planet = PLANET_MAP[planetId]
@@ -507,11 +584,11 @@ export function advanceDay(state: GameState): GameState {
       nextRecord[commodityId] = nextListing
     }
     for (const commodityId of Object.keys(nextRecord) as CommodityId[]) {
-      refreshPrice(nextRecord, planetId, commodityId, day)
+      refreshPrice(nextRecord, planetId, commodityId, day, events)
     }
     nextMarkets[planetId] = nextRecord
   }
-  return { ...state, day, markets: nextMarkets }
+  return { ...state, day, markets: nextMarkets, activeEvents: events }
 }
 
 /**

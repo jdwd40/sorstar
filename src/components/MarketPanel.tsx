@@ -2,11 +2,19 @@ import { useMemo, useState } from 'react'
 import type { CommodityId, GameState, Planet } from '../types/game'
 import {
   COMMODITIES,
+  COMMODITY_MAP,
   PLANET_TYPE_META,
   cargoCapacityAtLevel,
   dailyUpkeep,
 } from '../data/gameData'
 import { cargoFree, cargoUsed, priceDirection, quoteBuy, quoteSell } from '../services/marketService'
+import {
+  commodityEventScale,
+  eventDaysRemaining,
+  eventDefinition,
+  eventMoves,
+  eventsAt,
+} from '../services/marketEventService'
 import { fmt, fmtMoney } from '../utils/format'
 import type { ActionResult } from '../context/GameContext'
 
@@ -44,6 +52,50 @@ const ARROW_COLOR: Record<'up' | 'down' | 'flat', string> = {
   flat: 'text-slate-500',
 }
 
+/** "Food: +45%", signed so a discount reads as one at a glance. */
+function moveLabel(commodityId: CommodityId, multiplier: number): string {
+  const pct = Math.round((multiplier - 1) * 100)
+  return `${COMMODITY_MAP[commodityId].name}: ${pct >= 0 ? '+' : ''}${pct}%`
+}
+
+function MarketAlerts({ game, planet }: { game: GameState; planet: Planet }) {
+  const active = eventsAt(game.activeEvents, planet.id, game.day)
+  // No events is the normal case: an empty panel would be noise on most days.
+  if (active.length === 0) return null
+  return (
+    <div className="card p-4 border-amber-500/40">
+      <h3 className="text-xs uppercase tracking-wider text-amber-300 mb-2">⚠ Market Alert</h3>
+      <div className="space-y-2">
+        {active.map((event) => {
+          const def = eventDefinition(event)
+          const days = eventDaysRemaining(event, game.day)
+          return (
+            <div key={event.id}>
+              <div className="text-sm font-semibold text-amber-200">
+                {def?.name ?? event.eventType}
+              </div>
+              <div className="text-xs text-slate-400">{def?.description}</div>
+              <div className="text-xs text-slate-300">
+                {eventMoves(event).map((move) => (
+                  <span
+                    key={move.commodityId}
+                    className={`mr-3 font-semibold ${move.multiplier > 1 ? 'text-red-400' : 'text-emerald-400'}`}
+                  >
+                    {moveLabel(move.commodityId, move.multiplier)}
+                  </span>
+                ))}
+                <span className="text-slate-500">
+                  {days} day{days === 1 ? '' : 's'} remaining
+                </span>
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 export default function MarketPanel({ game, planet, buy, sell, waitDay }: MarketPanelProps) {
   const [inputs, setInputs] = useState<Record<string, string>>({})
   const capacity = cargoCapacityAtLevel(game.ship.cargoLevel)
@@ -61,6 +113,9 @@ export default function MarketPanel({ game, planet, buy, sell, waitDay }: Market
       const qty = Number.isFinite(parsedQty) && parsedQty > 0 ? Math.floor(parsedQty) : 0
 
       const listing = game.markets[planet.id]?.[commodity.id]
+      // Quoted with the same event multiplier the trade services apply, so a
+      // price shown during a shortage is the price that will be charged.
+      const eventScale = commodityEventScale(game.activeEvents, planet.id, commodity.id, game.day)
 
       // Quote through the same helpers the trade functions use, so the cost
       // shown here is the cost charged. The buy price rises as stock is
@@ -71,7 +126,7 @@ export default function MarketPanel({ game, planet, buy, sell, waitDay }: Market
         let hi = Math.floor(game.credits / Math.max(1, listing.price))
         while (lo < hi) {
           const mid = Math.ceil((lo + hi) / 2)
-          if (quoteBuy(planet, commodity, listing, mid, game.day).cost <= game.credits) lo = mid
+          if (quoteBuy(planet, commodity, listing, mid, game.day, eventScale).cost <= game.credits) lo = mid
           else hi = mid - 1
         }
         return lo
@@ -79,12 +134,12 @@ export default function MarketPanel({ game, planet, buy, sell, waitDay }: Market
       const maxBuy = Math.max(0, Math.min(listing?.stock ?? 0, free, maxByCredits))
 
       const buyQuote = listing
-        ? quoteBuy(planet, commodity, listing, qty, game.day)
+        ? quoteBuy(planet, commodity, listing, qty, game.day, eventScale)
         : { unitPrice: 0, cost: 0 }
       const buyCost = qty > 0 ? buyQuote.cost : 0
       const canBuy = qty > 0 && qty <= maxBuy
       const canSell = qty > 0 && qty <= owned
-      const sellValue = listing ? quoteSell(planet, commodity, listing, qty, game.day).proceeds : 0
+      const sellValue = listing ? quoteSell(planet, commodity, listing, qty, game.day, eventScale).proceeds : 0
 
       let buyTooltip = `Buy ${qty} for ${fmtMoney(buyCost)}`
       if (!canBuy) {
@@ -133,6 +188,8 @@ export default function MarketPanel({ game, planet, buy, sell, waitDay }: Market
 
   return (
     <div className="space-y-6">
+      <MarketAlerts game={game} planet={planet} />
+
       <div className="card p-5">
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-3">
