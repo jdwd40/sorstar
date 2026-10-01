@@ -1,12 +1,24 @@
-import type { CommodityId, GameState, MarketEvent, MarketListing, Stats } from '../types/game'
+import type {
+  CommodityId,
+  Contract,
+  GameState,
+  MarketEvent,
+  MarketListing,
+  PendingEncounter,
+  Stats,
+} from '../types/game'
 import {
   COMMODITY_MAP,
-  GAME_VERSION,
   MARKET_EVENT_MAP,
+  MAX_ACTIVE_CONTRACTS,
+  MAX_AVAILABLE_CONTRACTS,
   PLANETS,
   PLANET_MAP,
+  TRAVEL_ENCOUNTER_MAP,
 } from '../data/gameData'
 import { marketEventId } from './marketEventService'
+import { contractId } from './contractService'
+import { encounterId } from './encounterService'
 
 function assertNumber(v: unknown, label: string): asserts v is number {
   if (typeof v !== 'number' || !Number.isFinite(v)) throw new Error(`Corrupt save: ${label} must be a number`)
@@ -129,6 +141,16 @@ function assertModel(raw: GameState): void {
   if (raw.activeEvents !== undefined && !Array.isArray(raw.activeEvents)) {
     throw new Error('Corrupt save: activeEvents must be an array')
   }
+  if (raw.contracts !== undefined && !Array.isArray(raw.contracts)) {
+    throw new Error('Corrupt save: contracts must be an array')
+  }
+  if (
+    raw.pendingEncounter !== undefined &&
+    raw.pendingEncounter !== null &&
+    (typeof raw.pendingEncounter !== 'object' || Array.isArray(raw.pendingEncounter))
+  ) {
+    throw new Error('Corrupt save: pendingEncounter must be an object or null')
+  }
   assertNumber(raw.ship.cargoLevel, 'ship.cargoLevel')
   assertNumber(raw.ship.engineLevel, 'ship.engineLevel')
   assertNumber(raw.ship.navLevel, 'ship.navLevel')
@@ -184,11 +206,25 @@ export function migrate(raw: GameState): GameState {
     state = { ...state, version: 3 }
   }
 
-  if (state.version < GAME_VERSION) {
+  if (state.version < 4) {
     // v4: market events. Older saves have none, which is a truthful reading of
     // the sector rather than lost progress: events are drawn as days advance,
     // so the next day fills this back in on its own.
-    state = { ...state, activeEvents: [], version: GAME_VERSION }
+    state = { ...state, activeEvents: [], version: 4 }
+  }
+
+  if (state.version < 5) {
+    // v5: delivery contracts. Older saves have none, and nothing was lost: a
+    // contract is a job on offer, so a player who never saw one missed no
+    // progress. The board refills on the next day.
+    state = { ...state, contracts: [], version: 5 }
+  }
+
+  if (state.version < 6) {
+    // v6: travel encounters. Older saves have none, and nothing was lost: a save
+    // written before encounters existed was never interrupted, so there is no
+    // journey left hanging to resume. The next jump draws one if the roll says so.
+    state = { ...state, pendingEncounter: null, version: 6 }
   }
 
   // Self-healing pass. Runs on every load, not just version upgrades, because
@@ -213,6 +249,8 @@ export function migrate(raw: GameState): GameState {
     // price, so fall back to treating the price as unchanged.
     markets: repairPrevPrices(state.markets),
     activeEvents: cleanEvents(state.activeEvents, state.day),
+    contracts: cleanContracts(state.contracts),
+    pendingEncounter: cleanPendingEncounter(state.pendingEncounter, statOr(stats.tripsMade, 0, 'tripsMade')),
     stats: {
       ...stats,
       tradingProfit: statOr(stats.tradingProfit, 0, 'tradingProfit'),
@@ -221,9 +259,190 @@ export function migrate(raw: GameState): GameState {
       tripsMade: statOr(stats.tripsMade, 0, 'tripsMade'),
       upgradesInvested: statOr(stats.upgradesInvested, 0, 'upgradesInvested'),
       maxNetWorth: statOr(stats.maxNetWorth, 0, 'maxNetWorth'),
+      contractRevenue: statOr(stats.contractRevenue, 0, 'contractRevenue'),
+      contractsCompleted: statOr(stats.contractsCompleted, 0, 'contractsCompleted'),
+      contractsFailed: statOr(stats.contractsFailed, 0, 'contractsFailed'),
     },
   }
   return state
+}
+
+/**
+ * A non-negative *whole* number, or `undefined` for anything else.
+ *
+ * Stricter than `wholeOrUndef`, which floors - correct for a cargo count that
+ * can only ever hold units, but wrong for a contract: a load of 2.5 is not a
+ * load of 2, and quietly shrinking a promise the client signed is worse than
+ * dropping the damaged entry and letting the board redraw it.
+ */
+function exactWholeOrUndef(v: unknown): number | undefined {
+  if (typeof v !== 'number' || !Number.isInteger(v) || v < 0) return undefined
+  return v
+}
+
+/**
+ * Contracts that can still be acted on.
+ *
+ * A contract is only load-bearing if every field the client and the game read
+ * off it is usable: a real commodity, a load of it, two real and *different*
+ * planets, a deadline after the day it was offered, a positive fee, and a
+ * status that is still live. A resolved contract - one already delivered, or
+ * one that failed - is dropped rather than kept, because a save cannot tell a
+ * completed contract from a pending one that happens to be missing a field, and
+ * paying out on the wrong guess would be worse than dropping the job.
+ *
+ * Each entry is independent, so one damaged contract costs that contract and
+ * nothing else. Ids are derived, so a missing or duplicated one is rebuilt the
+ * same way `cleanEvents` rebuilds its own.
+ */
+function cleanContracts(contracts: unknown): Contract[] {
+  if (!Array.isArray(contracts)) return []
+  const out: Contract[] = []
+  const seen = new Set<string>()
+  for (const raw of contracts) {
+    if (!raw || typeof raw !== 'object') continue
+    const contract = raw as Partial<Contract>
+    if (typeof contract.commodityId !== 'string' || !COMMODITY_MAP[contract.commodityId]) continue
+    if (typeof contract.originPlanetId !== 'string' || !PLANET_MAP[contract.originPlanetId]) continue
+    if (
+      typeof contract.destinationPlanetId !== 'string' ||
+      !PLANET_MAP[contract.destinationPlanetId] ||
+      contract.destinationPlanetId === contract.originPlanetId
+    ) {
+      continue
+    }
+    const quantity = exactWholeOrUndef(contract.quantity)
+    if (quantity === undefined || quantity < 1) continue
+    const offeredDay = exactWholeOrUndef(contract.offeredDay)
+    const deadlineDay = exactWholeOrUndef(contract.deadlineDay)
+    if (offeredDay === undefined || deadlineDay === undefined) continue
+    if (deadlineDay <= offeredDay) continue
+    if (typeof contract.reward !== 'number' || !Number.isFinite(contract.reward) || contract.reward < 1) continue
+    // Anything not still live - including a status from a build that kept
+    // resolved contracts around - resolves to a contract nobody is owed.
+    if (contract.status !== 'available' && contract.status !== 'accepted') continue
+
+    const fields = {
+      commodityId: contract.commodityId,
+      quantity,
+      originPlanetId: contract.originPlanetId,
+      destinationPlanetId: contract.destinationPlanetId,
+      offeredDay,
+      deadlineDay,
+      reward: Math.round(contract.reward),
+      status: contract.status,
+    }
+    // A duplicate id is a damaged record, not a second contract: re-deriving the
+    // id would resurrect the copy as a fresh offer. Only an id that is missing
+    // or unusable is rebuilt, into a slot nothing else is using.
+    const storedId = contract.id
+    if (typeof storedId === 'string' && storedId.length > 0) {
+      if (seen.has(storedId)) continue
+      seen.add(storedId)
+      out.push({ ...fields, id: storedId })
+    } else {
+      const id = contractId(
+        offeredDay,
+        contract.originPlanetId,
+        firstFreeSlot(seen, offeredDay, contract.originPlanetId),
+      )
+      seen.add(id)
+      out.push({ ...fields, id })
+    }
+  }
+  return boundContracts(out)
+}
+
+/** The lowest board slot not already spoken for, so a rebuilt id cannot collide. */
+function firstFreeSlot(seen: Set<string>, offeredDay: number, originPlanetId: string): number {
+  for (let slot = 0; slot < MAX_ACTIVE_CONTRACTS + MAX_AVAILABLE_CONTRACTS; slot++) {
+    if (!seen.has(contractId(offeredDay, originPlanetId, slot))) return slot
+  }
+  return MAX_ACTIVE_CONTRACTS + MAX_AVAILABLE_CONTRACTS
+}
+
+/**
+ * At most one hold's worth of work survives a load.
+ *
+ * The board and the hold are both bounded by the game, so an unbounded list can
+ * only come from a hand-edited save - and it would be carried by every load and
+ * every save forever. Accepted contracts are kept ahead of offers because they
+ * are obligations the player is already flying, and both are kept in the order
+ * they arrived, which is the order they were read in.
+ */
+function boundContracts(contracts: Contract[]): Contract[] {
+  const accepted = contracts.filter((c) => c.status === 'accepted').slice(0, MAX_ACTIVE_CONTRACTS)
+  const available = contracts.filter((c) => c.status === 'available').slice(0, MAX_AVAILABLE_CONTRACTS)
+  return [...accepted, ...available]
+}
+
+/**
+ * A pending encounter that can still be resolved, or null.
+ *
+ * The record is only worth keeping if it can be played out: a real encounter
+ * type this build still has, two real and different planets, a departure day, a
+ * trigger day inside the flight, a flight of at least one day, and a fuel bill
+ * that is a real number. Everything the player reads or pays is derived from
+ * the type and the id, so those are all it takes.
+ *
+ * A damaged record is dropped rather than repaired. The alternative - guessing
+ * a missing flight and landing the player at a destination the record does not
+ * name - would move a ship and spend days on the strength of a corrupt field,
+ * which is far worse than voiding an encounter and letting the player fly the
+ * journey again from where they left. `planetId` is still the origin in a valid
+ * record, so dropping it leaves a save that is coherent and flyable.
+ *
+ * A stored id is kept when it is usable, and rebuilt from the flight's own
+ * inputs when it is missing or empty, so a save hand-edited into having no id
+ * still describes the same encounter. `tripsMade` is the save's count *after*
+ * the interrupted trip was booked, so the seed index is one back.
+ */
+function cleanPendingEncounter(raw: unknown, tripsMade: number): PendingEncounter | null {
+  if (raw === null || raw === undefined) return null
+  if (typeof raw !== 'object' || Array.isArray(raw)) return null
+  const pending = raw as Partial<PendingEncounter>
+
+  if (typeof pending.type !== 'string' || !TRAVEL_ENCOUNTER_MAP[pending.type]) return null
+  if (typeof pending.originPlanetId !== 'string' || !PLANET_MAP[pending.originPlanetId]) return null
+  if (
+    typeof pending.destinationPlanetId !== 'string' ||
+    !PLANET_MAP[pending.destinationPlanetId] ||
+    pending.destinationPlanetId === pending.originPlanetId
+  ) {
+    return null
+  }
+  const departureDay = wholeOrUndef(pending.departureDay)
+  const triggerDay = wholeOrUndef(pending.triggerDay)
+  const journeyDays = wholeOrUndef(pending.journeyDays)
+  if (departureDay === undefined || triggerDay === undefined || journeyDays === undefined) {
+    return null
+  }
+  // The encounter interrupts a jump: it fires somewhere inside the flight, and
+  // the flight always leaves at least its last day to be flown.
+  if (journeyDays < 1) return null
+  if (triggerDay < departureDay || triggerDay - departureDay > journeyDays - 1) return null
+  const fuelCost = wholeOrUndef(pending.fuelCost)
+
+  const id =
+    typeof pending.id === 'string' && pending.id.length > 0
+      ? pending.id
+      : encounterId(
+          `${pending.originPlanetId}>${pending.destinationPlanetId}@${departureDay}#${Math.max(
+            0,
+            tripsMade - 1,
+          )}`,
+        )
+
+  return {
+    id,
+    type: pending.type,
+    originPlanetId: pending.originPlanetId,
+    destinationPlanetId: pending.destinationPlanetId,
+    departureDay,
+    triggerDay,
+    journeyDays,
+    fuelCost: fuelCost ?? 0,
+  }
 }
 
 /** Fills in a missing or non-numeric `prevPrice` from the listing's price. */

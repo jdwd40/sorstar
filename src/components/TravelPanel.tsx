@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { GameState, Planet } from '../types/game'
-import { PLANET_MAP, PLANETS, PLANET_TYPE_META, fuelCostAtLevel } from '../data/gameData'
-import { canTravel, distanceBetween, travelCost } from '../services/travelService'
+import { PLANET_MAP, PLANETS, PLANET_TYPE_META, distanceBetween, fuelCostAtLevel } from '../data/gameData'
+import { canTravel, travelCost } from '../services/travelService'
 import { getTradeLeads } from '../services/intelService'
 import {
   describeEventMoves,
@@ -9,8 +9,8 @@ import {
   eventDefinition,
   sectorEvents,
 } from '../services/marketEventService'
-import { carriedGoods } from '../services/gameService'
-import { fmt, fmtMoney } from '../utils/format'
+import { contractDests } from '../services/contractService'
+import { fmtMoney } from '../utils/format'
 import { sound } from '../utils/sound'
 import Modal from './Modal'
 import type { ActionResult } from '../context/GameContext'
@@ -19,103 +19,24 @@ import type { TravelResult } from '../services/travelService'
 interface TravelPanelProps {
   game: GameState
   travel: (destId: string) => ActionResult
+  /**
+   * Hands the arrival report up to the page.
+   *
+   * A jump that ran into something ends in two pieces, so the report cannot
+   * belong to this tab: an encounter resolved from wherever the player is
+   * standing still has to show it.
+   */
+  onArrival: (info: TravelResult) => void
 }
 
 type Phase = 'idle' | 'charging' | 'jumping'
 
-function ArrivalReport({
-  game,
-  info,
-  onClose,
-}: {
-  game: GameState
-  info: TravelResult
-  onClose: () => void
-}) {
-  const dest = PLANET_MAP[info.toId ?? game.planetId]
-  const goods = useMemo(() => carriedGoods(game).slice(0, 5), [game])
-  const leads = useMemo(() => (game.ship.navLevel >= 1 ? getTradeLeads(game).slice(0, 3) : []), [game])
-  const meta = PLANET_TYPE_META[dest?.type ?? 'frontier']
-
-  return (
-    <Modal onClose={onClose} labelledBy="arrival-title">
-      <div className="flex items-center gap-3 mb-4">
-        <span className="text-4xl">{dest?.icon}</span>
-        <div>
-          <h2 id="arrival-title" className="text-2xl font-bold text-white">
-            Arrived at {dest?.name}
-          </h2>
-          <p className="text-sm text-slate-400">
-            {info.distanceLy} ly · {fmtMoney(info.fuelCost ?? 0)} fuel · day {fmt(info.arriveDay ?? game.day)}
-            {dest && (
-              <span className={`ml-2 ${meta.color}`}>
-                {meta.icon} {dest.type}
-              </span>
-            )}
-          </p>
-        </div>
-      </div>
-
-      {goods.length > 0 && (
-        <div className="mb-4">
-          <h3
-            className="text-sm uppercase tracking-wider text-slate-400 mb-2"
-            title="What the Trade tab would credit you for each line if you sold it here now - the market absorbs your order as you sell, so this sits below Qty x listed price."
-          >
-            Your hold if sold here
-          </h3>
-          <div className="space-y-1">
-            {goods.map(({ commodity, qty, costBasis, sellsFor }) => {
-              const perUnit = sellsFor / qty - costBasis
-              return (
-                <div key={commodity.id} className="flex items-center justify-between text-sm">
-                  <span className="text-white">
-                    {commodity.icon} {commodity.name}
-                    <span className="text-slate-500"> ×{fmt(qty)}</span>
-                  </span>
-                  <span className={perUnit >= 0 ? 'text-emerald-400 font-semibold' : 'text-red-400 font-semibold'}>
-                    {perUnit >= 0 ? '+' : ''}{fmtMoney(perUnit)}/unit · {fmtMoney(sellsFor)}
-                  </span>
-                </div>
-              )
-            })}
-          </div>
-        </div>
-      )}
-
-      {leads.length > 0 && (
-        <div className="mb-4">
-          <h3 className="text-sm uppercase tracking-wider text-slate-400 mb-2">
-            🛰️ Best runs from here
-          </h3>
-          <div className="space-y-1">
-            {leads.map((lead) => (
-              <div key={lead.commodityId} className="flex items-center justify-between text-sm">
-                <span className="text-white">
-                  {lead.icon} {lead.commodityName}
-                  <span className="text-slate-500"> → {lead.targetPlanetName}</span>
-                </span>
-                <span className="text-emerald-400 font-semibold">+{fmtMoney(lead.runProfit)}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      <button onClick={onClose} className="btn-primary w-full">
-        Dock & look around
-      </button>
-    </Modal>
-  )
-}
-
-export default function TravelPanel({ game, travel }: TravelPanelProps) {
+export default function TravelPanel({ game, travel, onArrival }: TravelPanelProps) {
   const current = PLANET_MAP[game.planetId]
   const fuelPerLy = fuelCostAtLevel(game.ship.engineLevel)
   const [confirmDest, setConfirmDest] = useState<Planet | null>(null)
   const [phase, setPhase] = useState<Phase>('idle')
   const [jumpTo, setJumpTo] = useState<Planet | null>(null)
-  const [arrival, setArrival] = useState<TravelResult | null>(null)
   const [mapError, setMapError] = useState<string | null>(null)
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 const warpTimersRef = useRef<ReturnType<typeof setTimeout>[]>([])
@@ -154,6 +75,11 @@ const warpTimersRef = useRef<ReturnType<typeof setTimeout>[]>([])
     () => (intelEnabled ? sectorEvents(game.activeEvents, game.day) : []),
     [game, intelEnabled],
   )
+  // Contract deadlines are the player's own commitments, so they are marked on
+  // the chart the moment they are accepted - unlike market events, which the
+  // Navigation Array gates. A destination the player is already carrying work
+  // for is a reason to fly there that no upgrade should hide.
+  const dueHere = useMemo(() => contractDests(game), [game])
   const farthestLy = useMemo(
     () => Math.max(...PLANETS.map((p) => distanceBetween(current, p))),
     [current],
@@ -192,7 +118,9 @@ warpTimersRef.current.forEach(clearTimeout)
         }
         setPhase('idle')
         setJumpTo(null)
-        setArrival(res.info ?? null)
+        // Interrupted jumps report nothing: the encounter modal is what the
+        // player is looking at now, and the arrival comes after it.
+        if (res.info) onArrival(res.info)
       }, 1300),
     ]
   }
@@ -231,17 +159,20 @@ warpTimersRef.current.forEach(clearTimeout)
             const isCurrent = planet.id === game.planetId
             const meta = PLANET_TYPE_META[planet.type]
             const hasEvent = eventPlanets.has(planet.id)
+            const due = dueHere.get(planet.id) ?? 0
             return (
               <div
                 key={planet.id}
                 role="button"
                 tabIndex={isCurrent ? -1 : 0}
                 aria-label={
-                  hasEvent
-                    ? `${planet.name}${isCurrent ? ', current location' : ''}, market alert`
-                    : isCurrent
-                      ? `${planet.name}, current location`
-                      : `Travel to ${planet.name}`
+                  due > 0
+                    ? `${planet.name}${isCurrent ? ', current location' : ''}, ${due} contract${due > 1 ? 's' : ''} due here`
+                    : hasEvent
+                      ? `${planet.name}${isCurrent ? ', current location' : ''}, market alert`
+                      : isCurrent
+                        ? `${planet.name}, current location`
+                        : `Travel to ${planet.name}`
                 }
                 className={`absolute -translate-x-1/2 -translate-y-1/2 flex flex-col items-center group ${
                   isCurrent ? 'z-20' : 'z-10 cursor-pointer'
@@ -264,6 +195,11 @@ warpTimersRef.current.forEach(clearTimeout)
                   className={`text-[10px] mt-1 px-1.5 py-0.5 rounded ${isCurrent ? 'bg-indigo-500/60 text-white' : 'bg-slate-800/80 text-slate-300 group-hover:text-white'} whitespace-nowrap`}
                 >
                   {hasEvent && <span className="text-amber-400">⚠ </span>}
+                  {due > 0 && (
+                    <span className="text-emerald-400" title="Contract due here">
+                      📜{due > 1 ? due : ''}{' '}
+                    </span>
+                  )}
                   {meta.icon} {planet.name}
                 </span>
               </div>
@@ -294,6 +230,7 @@ warpTimersRef.current.forEach(clearTimeout)
             <tbody>
               {destinations.map(({ planet, cost, ly, check }) => {
                 const meta = PLANET_TYPE_META[planet.type]
+                const due = dueHere.get(planet.id) ?? 0
                 return (
                   <tr key={planet.id} className="border-b border-slate-800/60 hover:bg-slate-800/30">
                     <td className="py-3 pr-4">
@@ -304,6 +241,14 @@ warpTimersRef.current.forEach(clearTimeout)
                           </span>
                         )}
                         {planet.name}
+                        {due > 0 && (
+                          <span
+                            className="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 align-middle"
+                            title={`${due} contract${due > 1 ? 's' : ''} to deliver here`}
+                          >
+                            📜 {due} due
+                          </span>
+                        )}
                       </div>
                       <div className="text-xs text-slate-500 line-clamp-1">{planet.description}</div>
                     </td>
@@ -525,9 +470,6 @@ warpTimersRef.current.forEach(clearTimeout)
         </div>
       )}
 
-      {arrival && (
-        <ArrivalReport game={game} info={arrival} onClose={() => setArrival(null)} />
-      )}
     </div>
   )
 }

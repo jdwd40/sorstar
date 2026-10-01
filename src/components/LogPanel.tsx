@@ -19,6 +19,31 @@ export default function LogPanel({ game }: { game: GameState }) {
         </div>
       </div>
 
+      {/* Contracts are tracked apart from trading profit: the fee is not a
+          margin, the goods were still bought at market. Counters, not a list -
+          a resolved contract has already been logged and paid. */}
+      {(game.stats.contractsCompleted > 0 || game.stats.contractsFailed > 0) && (
+        <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-500 mb-3">
+          <span>
+            Contracts:{' '}
+            <span className="text-emerald-400 font-semibold">
+              {fmt(game.stats.contractsCompleted)} delivered
+            </span>
+            {game.stats.contractsFailed > 0 ? (
+              <>
+                {' · '}
+                <span className="text-red-400 font-semibold">
+                  {fmt(game.stats.contractsFailed)} failed
+                </span>
+              </>
+            ) : null}
+          </span>
+          <span>
+            Fees paid: <span className="text-slate-300 font-semibold">{fmtMoney(game.stats.contractRevenue)}</span>
+          </span>
+        </div>
+      )}
+
       {game.log.length === 0 ? (
         <p className="text-sm text-slate-500">The log is blank so far.</p>
       ) : (

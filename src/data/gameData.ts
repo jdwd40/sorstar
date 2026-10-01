@@ -1,15 +1,18 @@
 import type {
   Commodity,
   CommodityId,
+  GameState,
+  LogEntry,
   MarketEventType,
   Planet,
   PlanetType,
   Ship,
   ShipUpgradeType,
+  TravelEncounterType,
 } from '../types/game'
 
 export const GAME_TARGET_NET_WORTH = 100_000
-export const GAME_VERSION = 4
+export const GAME_VERSION = 6
 export const STARTING_CREDITS = 1200
 export const STARTING_PLANET = 'eden'
 // Deliberately still "v2": the key names the *save*, not the schema, and
@@ -416,6 +419,45 @@ export function fuelCostAtLevel(level: number): number {
 }
 
 /**
+ * Light-years between two planets, and - because the engine burns one unit per
+ * light-year - also the number of days a jump between them takes.
+ *
+ * Deliberately a property of the map rather than of the player: contracts price
+ * and schedule a trip that has not been made yet, so this has to be answerable
+ * for a route the ship is nowhere near. `travelService` reads it from here
+ * rather than the other way round.
+ */
+export function distanceBetween(a: Planet, b: Planet): number {
+  const dx = a.position.x - b.position.x
+  const dy = a.position.y - b.position.y
+  return Math.max(1, Math.round(Math.sqrt(dx * dx + dy * dy) / 10))
+}
+
+/**
+ * Fuel bill in credits for a jump between two planets on a given engine tier.
+ * Zero for an unknown planet or a jump to where you already are.
+ */
+export function fuelCostBetween(fromId: string, toId: string, engineLevel: number): number {
+  const from = PLANET_MAP[fromId]
+  const to = PLANET_MAP[toId]
+  if (!from || !to || from.id === to.id) return 0
+  return Math.max(1, Math.round(distanceBetween(from, to) * fuelCostAtLevel(engineLevel)))
+}
+
+/**
+ * Appends one line to the flight log, newest first, trimmed to `LOG_LIMIT`.
+ *
+ * Lives here next to the cap rather than in `gameService` because trading,
+ * travel, market events and contracts all write to the same log and must share
+ * one limit - and because contracts settle inside `waitDay`/`travel`, below the
+ * layer that imports `gameService`.
+ */
+export function withLog(state: GameState, icon: string, text: string): GameState {
+  const entry: LogEntry = { day: state.day, icon, text }
+  return { ...state, log: [entry, ...state.log].slice(0, LOG_LIMIT) }
+}
+
+/**
  * Daily berth and crew upkeep, charged when the player deliberately waits a day.
  *
  * Upgrades stay a trade-off rather than a pure upgrade: each cargo bay, engine
@@ -440,4 +482,438 @@ export const STARTING_SHIP = {
   cargoLevel: 0,
   engineLevel: 0,
   navLevel: 0,
+}
+
+/**
+ * Delivery contracts: carry a load you bought yourself to a named planet by a
+ * named day, and be paid a fixed fee for handing it over.
+ *
+ * A contract is a small second economy sitting on top of the market, never a
+ * replacement for it. Nothing here is delivered for free: the goods are bought
+ * from the same market every other trade uses, the reward is cash on top of a
+ * trip the player chose, and neither price is touched by the contract.
+ */
+
+/** Jobs on the board at once. Small, so the board is worth reading. */
+export const MAX_AVAILABLE_CONTRACTS = 3
+
+/** Carried contracts at once. Two, so the hold is a choice. */
+export const MAX_ACTIVE_CONTRACTS = 2
+
+/**
+ * Contract loads, as a share of the cargo hold.
+ *
+ * Capped well below a full hold on purpose: a load that exactly fills the ship
+ * leaves nothing for the rest of the business, and the early game has a 12-unit
+ * hold that a 25-75% band already makes meaningful.
+ */
+export const CONTRACT_QTY_MIN_SHARE = 0.25
+export const CONTRACT_QTY_MAX_SHARE = 0.75
+
+/**
+ * Slack on top of the flight itself, in days.
+ *
+ * The deadline is never a puzzle to time: it is the trip plus a couple of days
+ * to buy the load, find a berth or recover from a mistimed jump. Two at the
+ * tight end is enough that a same-day purchase and jump clears it; five at the
+ * slack end is a contract that can wait for a cheap market first.
+ */
+export const CONTRACT_DEADLINE_MIN_BUFFER = 2
+export const CONTRACT_DEADLINE_MAX_BUFFER = 5
+
+/**
+ * What the client pays over the value of the goods plus the fuel to move them.
+ *
+ * Bounded, and applied once when the contract is generated. A percentage that
+ * scaled with distance or cargo would turn long hauls into a strictly better
+ * rate of return and the shorter contracts would stop being worth taking.
+ */
+export const CONTRACT_PREMIUM_MIN = 0.2
+export const CONTRACT_PREMIUM_MAX = 0.4
+
+/**
+ * The credits a generated load is sized against, floored at this.
+ *
+ * A pilot reduced to nothing would otherwise only ever be offered 1-unit jobs,
+ * which is the opposite of the recovery the board is there to offer. The floor
+ * is deliberately below the starting balance: an early offer has to be
+ * affordable, not merely possible.
+ */
+export const CONTRACT_MIN_OFFER_CREDITS = 200
+
+/** Two per commodity, so the same load can be offered as different work. */
+export const CONTRACT_TITLES: Record<CommodityId, [string, string]> = {
+  food: ['Food Relief', 'Ration Shipment'],
+  water: ['Water Shipment', 'Tanker Charter'],
+  fuel: ['Fuel Resupply', 'Power Contract'],
+  metals: ['Metals Order', 'Foundry Contract'],
+  electronics: ['Components Order', 'Tech Transfer'],
+  medicine: ['Medical Relief', 'Medical Shipment'],
+  luxury: ['Luxury Consignment', 'Prestige Shipment'],
+  crystals: ['Crystal Order', 'Research Contract'],
+}
+
+export const CONTRACT_CLIENTS: [string, string, string, string] = [
+  'Sector Relief Office',
+  'Colonial Supply Guild',
+  'Frontier Aid Network',
+  'Megacorp Logistics',
+]
+
+/** The client's complaint. One clause, never the reason - the board says why. */
+export const CONTRACT_FLAVOUR: Record<CommodityId, string> = {
+  food: 'rations are down to a day and a half',
+  water: 'the reserve tanks are down to a trickle',
+  fuel: 'the generators are running on fumes',
+  metals: 'the fabricators have nothing left to cut',
+  electronics: 'the tech stacks are dark for want of parts',
+  medicine: 'the clinics have run their shelves bare',
+  luxury: 'the season opens in days and nothing has been ordered',
+  crystals: 'the assay needs its samples now',
+}
+
+/**
+ * Travel encounters: the small things that happen to a ship on the way
+ * somewhere, and the one choice the player gets.
+ *
+ * An encounter is deliberately the lightest system in the game - no combat, no
+ * damage, no equipment, no reputation. It costs the player a decision and maybe
+ * a few dozen credits, and it exists so that a jump is occasionally something
+ * other than arithmetic. What makes it interesting is the delay: a choice that
+ * costs a day is charged through the ordinary `advanceDay`, so it quietly moves
+ * markets, market events and contract deadlines with everything else, and a
+ * contract can be missed by an encounter rather than by a bad trade.
+ *
+ * These are the *definitions* - pure data, no functions - and they live here
+ * beside the market event definitions for the same reason. A journey's actual
+ * encounter is a `PendingEncounter` holding ids and dates, and everything a
+ * player reads or pays is derived from these by `encounterService`.
+ */
+
+/** One of the decisions an encounter offers. */
+export interface EncounterChoiceDefinition {
+  id: string
+  label: string
+  /** One short line: what the choice commits to, or what it risks. */
+  detail: string
+  /**
+   * Credits the choice *certainly* costs, in base units, before progression
+   * scaling. The drawn figure is shown on the button, so a payment is never a
+   * surprise; anything uncertain is described in `risk` instead of hidden.
+   */
+  cost: [number, number]
+  /** What else the choice might cost, phrased as uncertainty. Omitted when certain. */
+  risk?: string
+  /** Past-tense phrase for the flight log: "assisted a damaged freighter". */
+  log: string
+}
+
+export interface TravelEncounterDefinition {
+  type: TravelEncounterType
+  name: string
+  icon: string
+  description: string
+  choices: EncounterChoiceDefinition[]
+}
+
+export const TRAVEL_ENCOUNTERS: TravelEncounterDefinition[] = [
+  {
+    type: 'distress-signal',
+    name: 'Distress Signal',
+    icon: '🆘',
+    description: 'A damaged freighter is broadcasting nearby, running on fumes.',
+    choices: [
+      {
+        id: 'assist',
+        label: 'Assist',
+        detail: 'Cover their emergency repairs.',
+        cost: [50, 150],
+        risk: 'They may pay you back for it.',
+        log: 'assisted a damaged freighter',
+      },
+      {
+        id: 'ignore',
+        label: 'Ignore',
+        detail: 'Keep to your course.',
+        cost: [0, 0],
+        log: 'ignored a distress call',
+      },
+    ],
+  },
+  {
+    type: 'derelict-pod',
+    name: 'Derelict Cargo Pod',
+    icon: '📦',
+    description: 'Sensors pick up an abandoned pod tumbling in the drift.',
+    choices: [
+      {
+        id: 'salvage',
+        label: 'Salvage',
+        detail: 'Haul it aboard if the hold has room.',
+        cost: [0, 0],
+        log: 'salvaged an abandoned cargo pod',
+      },
+      {
+        id: 'leave',
+        label: 'Leave it',
+        detail: 'Let it keep drifting.',
+        cost: [0, 0],
+        log: 'left a cargo pod behind',
+      },
+    ],
+  },
+  {
+    type: 'pirate-demand',
+    name: 'Pirate Demand',
+    icon: '🏴‍☠️',
+    description: 'A small raider vessel drops astern and wants a toll for the passage.',
+    choices: [
+      {
+        id: 'pay',
+        label: 'Pay the toll',
+        detail: 'Pay up and go on your way.',
+        cost: [100, 140],
+        log: 'paid a raider toll',
+      },
+      {
+        id: 'run',
+        label: 'Run',
+        detail: 'Burn hard for open space.',
+        cost: [0, 0],
+        risk: 'You might shake them off - or lose a little and lose a day.',
+        log: 'ran from a raider',
+      },
+    ],
+  },
+  {
+    type: 'engine-trouble',
+    name: 'Engine Trouble',
+    icon: '⚙️',
+    description: 'The warp coils are overheating and the drive has gone unstable.',
+    choices: [
+      {
+        id: 'repair',
+        label: 'Repair properly',
+        detail: 'A yard tug works on the coils while you hold station.',
+        cost: [40, 120],
+        log: 'repaired the warp drive',
+      },
+      {
+        id: 'patch',
+        label: 'Patch it',
+        detail: 'Keep flying on a patched drive.',
+        cost: [0, 0],
+        risk: 'You may lose a day to it.',
+        log: 'patched over engine trouble',
+      },
+    ],
+  },
+  {
+    type: 'space-debris',
+    name: 'Space Debris',
+    icon: '🛰️',
+    description: 'A debris field is drifting across the lane ahead.',
+    choices: [
+      {
+        id: 'detour',
+        label: 'Detour',
+        detail: 'Go around it.',
+        cost: [0, 0],
+        risk: 'A day longer in transit.',
+        log: 'detoured around a debris field',
+      },
+      {
+        id: 'push',
+        label: 'Push through',
+        detail: 'Straight over, watching the plating.',
+        cost: [0, 0],
+        risk: 'Something may scrape the hull.',
+        log: 'pushed through a debris field',
+      },
+    ],
+  },
+  {
+    type: 'merchant-convoy',
+    name: 'Merchant Convoy',
+    icon: '🚚',
+    description: 'A convoy hauls alongside, selling off a pallet before they move on.',
+    choices: [
+      {
+        id: 'buy',
+        label: 'Buy the pallet',
+        detail: 'Take a few units off their hands at a discount.',
+        cost: [0, 0],
+        risk: 'Uses hold space.',
+        log: 'bought from a passing convoy',
+      },
+      {
+        id: 'decline',
+        label: 'Decline',
+        detail: 'Wish them a good run.',
+        cost: [0, 0],
+        log: 'declined a convoy sale',
+      },
+    ],
+  },
+  {
+    type: 'nav-anomaly',
+    name: 'Navigation Anomaly',
+    icon: '🧭',
+    description: 'Gravitational readings ahead do not match anything on the charts.',
+    choices: [
+      {
+        id: 'investigate',
+        label: 'Investigate',
+        detail: 'Have the sensors look closer.',
+        cost: [0, 0],
+        risk: 'Possible credits, possible lost day.',
+        log: 'investigated a navigation anomaly',
+      },
+      {
+        id: 'ignore',
+        label: 'Ignore',
+        detail: 'The suite is probably wrong.',
+        cost: [0, 0],
+        log: 'ignored odd readings',
+      },
+    ],
+  },
+  {
+    type: 'customs-check',
+    name: 'Customs Inspection',
+    icon: '🛃',
+    description: 'A patrol cutter hails you and asks for your manifest.',
+    choices: [
+      {
+        id: 'comply',
+        label: 'Comply',
+        detail: 'Answer the hail and show the manifest.',
+        cost: [0, 0],
+        risk: 'Usually free. They may charge a small fee.',
+        log: 'complied with a customs inspection',
+      },
+      {
+        id: 'expedite',
+        label: 'Expedite',
+        detail: 'Buy the inspector off the record.',
+        cost: [30, 70],
+        log: 'paid to speed through customs',
+      },
+    ],
+  },
+  {
+    type: 'science-probe',
+    name: 'Scientific Probe',
+    icon: '🔭',
+    description: 'An autonomous probe asks for a telemetry packet from your flight data.',
+    choices: [
+      {
+        id: 'transmit',
+        label: 'Transmit data',
+        detail: 'Hand over the flight data.',
+        cost: [0, 0],
+        log: 'answered a science probe',
+      },
+      {
+        id: 'ignore',
+        label: 'Ignore',
+        detail: 'Your data is your own.',
+        cost: [0, 0],
+        log: 'ignored a science probe',
+      },
+    ],
+  },
+  {
+    type: 'fuel-cache',
+    name: 'Fuel Cache',
+    icon: '⛽',
+    description: 'A dead navigation beacon marks an abandoned fuel cache nobody has claimed.',
+    choices: [
+      {
+        id: 'salvage',
+        label: 'Salvage',
+        detail: 'Strip the tanks and claim the salvage bond.',
+        cost: [0, 0],
+        log: 'claimed an abandoned fuel cache',
+      },
+      {
+        id: 'ignore',
+        label: 'Ignore',
+        detail: 'Leave the beacon as it is.',
+        cost: [0, 0],
+        log: 'left a fuel cache alone',
+      },
+    ],
+  },
+]
+
+export const TRAVEL_ENCOUNTER_MAP: Record<string, TravelEncounterDefinition> =
+  TRAVEL_ENCOUNTERS.reduce(
+    (acc, e) => {
+      acc[e.type] = e
+      return acc
+    },
+    {} as Record<string, TravelEncounterDefinition>,
+  )
+
+/**
+ * Chance a jump runs into something, in percent, for the shortest hop.
+ *
+ * Deliberately occasional: three or four journeys in ten are quiet, so an
+ * encounter stays a moment rather than the texture of every jump.
+ */
+export const ENCOUNTER_CHANCE_BASE_PERCENT = 20
+
+/**
+ * Extra chance for every further day of flight, so a long haul is a little more
+ * eventful than a hop next door - and capped below, because a game about
+ * arriving on time should not gamble the schedule.
+ */
+export const ENCOUNTER_CHANCE_PER_DAY_PERCENT = 2
+export const ENCOUNTER_CHANCE_MAX_PERCENT = 30
+
+/**
+ * What an encounter is worth, in base credits, before progression scaling.
+ *
+ * Sized against a 1200 cr starting balance and a 100,000 cr goal: an encounter
+ * moves tens of credits, never hundreds, so it is flavour with a price on it
+ * rather than a second economy. The rare payout is the exception and stays
+ * inside a single profitable cargo run.
+ */
+export const ENCOUNTER_REWARD_MIN = 30
+export const ENCOUNTER_REWARD_MAX = 250
+export const ENCOUNTER_RARE_REWARD_MAX = 400
+/** Chance, out of 100, that a generous encounter pays the rare figure. */
+export const ENCOUNTER_RARE_CHANCE_PERCENT = 12
+
+/** Days a single bad choice costs. One, never more: the delay is a decision, not a punishment. */
+export const ENCOUNTER_DELAY_DAYS = 1
+
+/** Units of salvage or of a convoy pallet. Small enough to fit any hold. */
+export const ENCOUNTER_CARGO_MIN_UNITS = 1
+export const ENCOUNTER_CARGO_MAX_UNITS = 4
+
+/** What a passing trader knocks off, as a share of the listed price. */
+export const ENCOUNTER_CONVOY_DISCOUNT_MIN = 0.6
+export const ENCOUNTER_CONVOY_DISCOUNT_MAX = 0.8
+
+/**
+ * How far the figures above stretch with the player's progress.
+ *
+ * Credits spent on upgrades are the only progression signal a save carries, and
+ * they are also a proxy for scale: an early encounter paying 30-250 cr matters
+ * against 1200 cr, and the same 250 cr is noise against a late-game hold. So
+ * every credit figure is multiplied by at most this, doubling at most once, and
+ * nowhere near fast enough to make encounters a strategy.
+ */
+export const ENCOUNTER_SCALE_UPGRADE_BUDGET = 25_000
+export const ENCOUNTER_SCALE_MAX = 2
+
+/**
+ * The multiplier a state's encounters are scaled by: 1 for a new pilot, at most
+ * `ENCOUNTER_SCALE_MAX` for a fully upgraded ship.
+ */
+export function encounterScale(upgradesInvested: number): number {
+  if (!Number.isFinite(upgradesInvested) || upgradesInvested <= 0) return 1
+  return 1 + Math.min(ENCOUNTER_SCALE_MAX - 1, upgradesInvested / ENCOUNTER_SCALE_UPGRADE_BUDGET)
 }

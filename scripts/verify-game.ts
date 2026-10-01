@@ -24,27 +24,58 @@ import {
   marketEventLogEntries,
   sectorEvents,
 } from '../src/services/marketEventService'
-import { travel } from '../src/services/travelService'
+import { travel, travelCost, resolveEncounter } from '../src/services/travelService'
+import { encounterId, encounterOptions } from '../src/services/encounterService'
+import {
+  acceptContract,
+  activeContracts,
+  availableContracts,
+  contractRoute,
+  deliverContract,
+  describeContract,
+  generateContract,
+  settleContracts,
+} from '../src/services/contractService'
 import { resumableIdentity } from '../src/services/pocketBaseStore'
 import { migrate } from '../src/services/migrate'
 import { buyUpgrade, describeUpgrade } from '../src/services/playerService'
-import type { Cargo, CommodityId, GameState, MarketEvent } from '../src/types/game'
+import type {
+  Cargo,
+  CommodityId,
+  EncounterResult,
+  GameState,
+  MarketEvent,
+  PendingEncounter,
+  TravelEncounterType,
+} from '../src/types/game'
 import {
   COMMODITY_MAP,
+  CONTRACT_DEADLINE_MAX_BUFFER,
+  CONTRACT_DEADLINE_MIN_BUFFER,
+  CONTRACT_PREMIUM_MAX,
+  CONTRACT_PREMIUM_MIN,
+  CONTRACT_QTY_MAX_SHARE,
+  CONTRACT_QTY_MIN_SHARE,
   EVENT_MAX_DAYS,
   EVENT_MIN_DAYS,
   GAME_VERSION,
   MARKET_EVENTS,
   MARKET_EVENT_MAP,
+  MAX_ACTIVE_CONTRACTS,
   MAX_ACTIVE_EVENTS,
+  MAX_AVAILABLE_CONTRACTS,
   PLANETS,
+  TRAVEL_ENCOUNTERS,
+  TRAVEL_ENCOUNTER_MAP,
   PLANET_MAP,
   STARTING_SHIP,
   UPKEEP_BASE,
   UPKEEP_MAX,
   cargoCapacityAtLevel,
   dailyUpkeep,
+  distanceBetween,
   fuelCostAtLevel,
+  fuelCostBetween,
 } from '../src/data/gameData'
 
 let failures = 0
@@ -60,6 +91,45 @@ const emptyCargo = (): Cargo => {
 const check = (cond: boolean, label: string) => {
   console.log(`${cond ? 'PASS' : 'FAIL'} - ${label}`)
   if (!cond) failures++
+}
+
+/**
+ * Finishes a jump the way a player has to: if an encounter interrupted it, take
+ * the first open choice, then land.
+ *
+ * Every check below `travel` that assumes an arrival has to go through this
+ * rather than reading `travel(...).state` directly. Before encounters a jump was
+ * one call that always ended docked; now it can stop half way, and a test that
+ * quietly carried on from the origin would be measuring the wrong planet.
+ */
+interface Jump {
+  state: GameState
+  error?: string
+  /** True when an encounter interrupted this jump. */
+  encountered: boolean
+  /** True when that encounter moved the balance or cost a day. */
+  encounterMoved: boolean
+}
+
+function completeJump(result: ReturnType<typeof travel>): Jump {
+  const plain: Jump = { state: result.state, encountered: false, encounterMoved: false }
+  if (result.error) return { ...plain, error: result.error }
+  if (!result.encounter) return plain
+  const option = encounterOptions(result.state, result.encounter).find((o) => !o.blockedReason)
+  if (!option) return { ...plain, error: 'an interrupted jump with no open choice' }
+  const resolved = resolveEncounter(result.state, option.id)
+  if (resolved.error) return { ...plain, state: resolved.state, encountered: true, error: resolved.error }
+  // An encounter that moved the balance or cost a day is as unknowable from a
+  // price forecast as a market event opening mid-jump: the band brackets the
+  // price on arrival, and this run did not land on the day the band was quoted
+  // for. One that costs nothing and delays nothing is an ordinary arrival as far
+  // as pricing goes, so it stays in the sample.
+  return {
+    state: resolved.state,
+    encountered: true,
+    encounterMoved:
+      (resolved.result?.creditsDelta ?? 0) !== 0 || (resolved.result?.daysDelta ?? 0) !== 0,
+  }
 }
 
 // 1. every planet has a priced market
@@ -88,7 +158,7 @@ const trial = (
   if (buyRes.error) return { error: buyRes.error }
   s = buyRes.state
   const before = s.credits
-  const t = travel(s, destId)
+  const t = completeJump(travel(s, destId))
   if (t.error) return { error: t.error }
   s = t.state
   const sellRes = sellCommodity(s, commodityId, qty)
@@ -145,7 +215,7 @@ check(uMax.error === 'Already fully upgraded.', 'cannot upgrade beyond max')
 let s5 = createNewGame()
 const nw0 = netWorth(s5)
 s5 = buyCommodity(s5, 'food', 10).state
-s5 = travel(s5, 'drax').state
+s5 = completeJump(travel(s5, 'drax')).state
 s5 = sellCommodity(s5, 'food', 10).state
 const nw1 = netWorth(s5)
 check(nw1 > nw0, 'net worth grows after profitable round trip')
@@ -468,8 +538,9 @@ const leads = getTradeLeads(s9)
 check(leads.length > 0, `intel produced ${leads.length} leads`)
 
 /**
- * Runs one lead end to end and reports what it banked, plus whether a market
- * event opened or closed at the destination while the ship was in transit.
+ * Runs one lead end to end and reports what it banked, plus whether anything
+ * unknowable happened on the way: a market event opening at the destination
+ * while the ship was in transit, or an encounter that cost credits or a day.
  *
  * Intel may price an event that is already running on the day it quotes a run -
  * it is visible news - but it must not predict one that starts three days into
@@ -482,7 +553,7 @@ function runLead(
 ): { cash: number; disturbed: boolean } | null {
   const bought = buyCommodity(state, lead.commodityId, lead.runQty)
   if (bought.error) return null
-  const arrived = travel(bought.state, lead.targetPlanetId)
+  const arrived = completeJump(travel(bought.state, lead.targetPlanetId))
   if (arrived.error) return null
   const sold = sellCommodity(arrived.state, lead.commodityId, lead.runQty)
   if (sold.error) return null
@@ -493,9 +564,11 @@ function runLead(
       .filter((e) => e.planetId === lead.targetPlanetId && e.endDay > arrived.state.day)
       .map((e) => e.id),
   )
-  const disturbed = arrived.state.activeEvents.some(
-    (e) => e.planetId === lead.targetPlanetId && !knownAtArrival.has(e.id),
-  )
+  const disturbed =
+    arrived.encounterMoved ||
+    arrived.state.activeEvents.some(
+      (e) => e.planetId === lead.targetPlanetId && !knownAtArrival.has(e.id),
+    )
   // The cash delta from the opening balance already nets out the purchase and
   // the fuel `travel` charged, so it is the run's realised profit directly.
   return { cash: sold.state.credits - START_CREDITS, disturbed }
@@ -542,8 +615,8 @@ check(
   `every realised run lands inside its quoted range (${insideBand}/${bandChecked})`,
 )
 check(
-  disturbedRuns <= 12,
-  `a market event opening mid-jump is rare enough to keep the band meaningful (${disturbedRuns}/${intelChecked})`,
+  disturbedRuns <= intelChecked / 4,
+  `events opening mid-jump and encounters interrupting a jump stay rare enough to keep the band meaningful (${disturbedRuns}/${intelChecked})`,
 )
 check(
   mismatched > 0 && mismatched < intelChecked,
@@ -846,7 +919,7 @@ check(
   // actually be afforded.
   let econ = buyCommodity({ ...createNewGame(), credits: 500_000 }, 'food', 10).state
   check(econ.stats.tradingProfit === 0, 'buying books no profit')
-  econ = travel(econ, 'drax').state
+  econ = completeJump(travel(econ, 'drax')).state
   check(econ.stats.tradingProfit === 0, 'travelling books no profit')
   const withUpgrade = buyUpgrade(econ, 'cargo')
   check(
@@ -1102,7 +1175,7 @@ const crisis = withEvents([forced('crop-failure', 'eden', day1.day, 4)])
   // Travel advances days, so it advances event lifetimes: a long event survives a
   // crossing with fewer days left, and a short one can expire in transit.
   const longEvent = withEvents([forced('mineral-discovery', 'drax', day1.day, 8)])
-  const arrived = travel(longEvent, 'drax')
+  const arrived = completeJump(travel(longEvent, 'drax'))
   check(!arrived.error, `travel with an event in flight (${arrived.error ?? 'ok'})`)
   if (!arrived.error) {
     const still = eventsAt(arrived.state.activeEvents, 'drax', arrived.state.day)
@@ -1113,7 +1186,7 @@ const crisis = withEvents([forced('crop-failure', 'eden', day1.day, 4)])
     )
   }
   const shortEvent = withEvents([forced('mineral-discovery', 'drax', day1.day, 1)])
-  const expiredInFlight = travel(shortEvent, 'drax')
+  const expiredInFlight = completeJump(travel(shortEvent, 'drax'))
   check(
     !expiredInFlight.error &&
       eventsAt(expiredInFlight.state.activeEvents, 'drax', expiredInFlight.state.day).length === 0,
@@ -1244,6 +1317,369 @@ const crisis = withEvents([forced('crop-failure', 'eden', day1.day, 4)])
   )
 }
 
+// 20. Delivery contracts: buy the load yourself, fly it, hand it over. A second
+//     economy that must never touch the market, the trading profit stat, or
+//     the cargo basis.
+{
+  const capacity = cargoCapacityAtLevel(STARTING_SHIP.cargoLevel)
+  const start = createNewGame()
+  const origin = start.planetId
+
+  // --- the board --------------------------------------------------------------------
+  const offers = availableContracts(start)
+  check(
+    offers.length === MAX_AVAILABLE_CONTRACTS,
+    `a new game opens with ${MAX_AVAILABLE_CONTRACTS} offers (${offers.length})`,
+  )
+  check(
+    offers.every(
+      (c) =>
+        c.status === 'available' &&
+        c.originPlanetId === origin &&
+        c.destinationPlanetId !== origin &&
+        PLANET_MAP[c.destinationPlanetId] !== undefined,
+    ),
+    'every offer is standing, local, and names a different real planet',
+  )
+  check(
+    offers.every((c) => Number.isInteger(c.quantity) && c.quantity >= 1),
+    'every offer is for a whole number of units',
+  )
+  check(
+    offers.every(
+      (c) =>
+        c.quantity >= Math.floor(capacity * CONTRACT_QTY_MIN_SHARE) &&
+        c.quantity <= Math.ceil(capacity * CONTRACT_QTY_MAX_SHARE),
+    ),
+    'every load is a slice of the hold, never the whole hold',
+  )
+  check(
+    offers.every((c) => c.reward >= 1 && Number.isFinite(c.reward)),
+    'every offer pays something',
+  )
+  check(
+    offers.every((c) => {
+      const route = contractRoute(c, start.ship.engineLevel)
+      return (
+        c.deadlineDay >= c.offeredDay + route.days + CONTRACT_DEADLINE_MIN_BUFFER &&
+        c.deadlineDay <= c.offeredDay + route.days + CONTRACT_DEADLINE_MAX_BUFFER
+      )
+    }),
+    'every deadline is the flight plus its buffer, so no contract is undeliverable',
+  )
+  check(
+    new Set(offers.map((c) => c.id)).size === offers.length,
+    'no two offers share an id',
+  )
+  // The premium is the client's margin on the goods plus the flight it saves.
+  const premiums = offers.map((c) => {
+    const unit =
+      start.markets[c.originPlanetId][c.commodityId].price ?? COMMODITY_MAP[c.commodityId].basePrice
+    const goods = unit * c.quantity
+    const fuel = fuelCostBetween(c.originPlanetId, c.destinationPlanetId, start.ship.engineLevel)
+    return c.reward / (goods + fuel) - 1
+  })
+  check(
+    premiums.every((p) => p >= CONTRACT_PREMIUM_MIN - 0.02 && p <= CONTRACT_PREMIUM_MAX + 0.02),
+    `every fee is the goods plus fuel plus a ${CONTRACT_PREMIUM_MIN}-${CONTRACT_PREMIUM_MAX} premium (${premiums
+      .map((p) => p.toFixed(2))
+      .join(', ')})`,
+  )
+
+  // --- generation is deterministic, and reloading changes nothing -------------------
+  const snapshot = JSON.stringify(start)
+  availableContracts(start)
+  activeContracts(start)
+  describeContract(offers[0])
+  check(JSON.stringify(start) === snapshot, 'reading the board never mutates the save')
+  check(
+    JSON.stringify(generateContract(start, origin, start.day, 0)) ===
+      JSON.stringify(generateContract(createNewGame(), origin, start.day, 0)),
+    'the same day and planet generate the same contract, slot for slot',
+  )
+  check(
+    generateContract(start, origin, start.day, 0)?.id !== generateContract(start, origin, start.day, 1)?.id,
+    'two slots on one day are two different contracts',
+  )
+  check(generateContract(start, 'nowhere', start.day, 0) === null, 'a non-planet offers nothing')
+
+  // --- accepting --------------------------------------------------------------------
+  const held = start
+  const first = offers[0]
+  const firstId = first.id
+  const afterAccept = acceptContract(held, firstId)
+  check(!afterAccept.error, 'an offer on the board can be accepted')
+  check(
+    afterAccept.state.credits === held.credits &&
+      JSON.stringify(afterAccept.state.cargo) === JSON.stringify(held.cargo) &&
+      JSON.stringify(afterAccept.state.markets) === JSON.stringify(held.markets),
+    'accepting moves no credits, no cargo and no market stock',
+  )
+  const accepted = afterAccept.state
+  check(
+    accepted.contracts.filter((c) => c.id === firstId).every((c) => c.status === 'accepted'),
+    'the accepted contract is on the books as carried',
+  )
+  check(
+    availableContracts(accepted).length === MAX_AVAILABLE_CONTRACTS,
+    'the board refills to full the moment an offer is taken',
+  )
+  const secondId = availableContracts(accepted)[0].id
+  const second = acceptContract(accepted, secondId)
+  check(!second.error, 'a second contract can be accepted')
+  const third = acceptContract(second.state, availableContracts(second.state)[0].id)
+  check(
+    third.error !== undefined && activeContracts(second.state).length === MAX_ACTIVE_CONTRACTS,
+    `a third contract is refused: the hold carries at most ${MAX_ACTIVE_CONTRACTS}`,
+  )
+  check(third.state === second.state, 'a refused acceptance leaves the state untouched')
+  check(
+    acceptContract(second.state, 'nope') .error !== undefined,
+    'accepting a contract that is not on the board is refused',
+  )
+
+  // An offer struck elsewhere is not a standing offer here.
+  const foreign = { ...offers[0], id: 'elsewhere#1#0', originPlanetId: PLANETS[1].id }
+  check(
+    acceptContract(second.state, foreign.id).error !== undefined &&
+      availableContracts({ ...second.state, contracts: [foreign] }).length === 0,
+    'an offer from another planet cannot be taken from here',
+  )
+
+  // --- delivering -------------------------------------------------------------------
+  const carried = activeContracts(second.state)[0]
+  const target = carried.destinationPlanetId
+  const load: GameState = {
+    ...second.state,
+    planetId: target,
+    cargo: { ...second.state.cargo, [carried.commodityId]: carried.quantity },
+    costBasis: { ...second.state.costBasis, [carried.commodityId]: 7 },
+  }
+  const atOrigin = { ...load, planetId: origin }
+  check(
+    deliverContract(atOrigin, carried.id).error !== undefined,
+    'delivering at the origin is refused',
+  )
+  const short = {
+    ...load,
+    cargo: { ...load.cargo, [carried.commodityId]: carried.quantity - 1 },
+  }
+  check(
+    deliverContract(short, carried.id).error !== undefined,
+    'delivering without the load aboard is refused',
+  )
+  const late = { ...load, day: carried.deadlineDay + 1 }
+  check(
+    deliverContract(late, carried.id).error !== undefined,
+    'a day past the deadline is refused',
+  )
+  check(
+    !deliverContract(load, carried.id).error,
+    'a contract can be handed over on the deadline day itself',
+  )
+
+  const stockBefore = JSON.stringify(load.markets)
+  const done = deliverContract(load, carried.id)
+  check(!done.error, 'the load is handed over at the destination')
+  check(
+    done.state.credits === load.credits + carried.reward,
+    'the fee is credited in full',
+  )
+  check(
+    (done.state.cargo[carried.commodityId] ?? 0) === 0,
+    'the load leaves the hold',
+  )
+  check(
+    JSON.stringify(done.state.markets) === stockBefore,
+    'delivering restocks no market and moves no price',
+  )
+  check(
+    done.state.stats.tradingProfit === load.stats.tradingProfit &&
+      done.state.stats.goodsSold === load.stats.goodsSold,
+    'a contract fee is not trading profit and is not a sale',
+  )
+  check(
+    done.state.stats.contractsCompleted === load.stats.contractsCompleted + 1 &&
+      done.state.stats.contractRevenue === load.stats.contractRevenue + carried.reward,
+    'the completion and the fee are both booked',
+  )
+  check(!done.state.contracts.some((c) => c.id === carried.id), 'the contract is gone once paid')
+  check(
+    deliverContract(done.state, carried.id).error !== undefined,
+    'a paid contract cannot be paid twice',
+  )
+  check(
+    availableContracts(done.state).length === MAX_AVAILABLE_CONTRACTS,
+    'the board refills after a delivery',
+  )
+
+  // Partial delivery of a stack: the basis is per unit, so what is left stays on
+  // exactly the same basis, and only an emptied line is dropped.
+  const partial: GameState = {
+    ...load,
+    cargo: { ...load.cargo, [carried.commodityId]: carried.quantity + 4 },
+  }
+  const partialDone = deliverContract(partial, carried.id)
+  check(
+    (partialDone.state.cargo[carried.commodityId] ?? 0) === 4 &&
+      partialDone.state.costBasis[carried.commodityId] === 7,
+    'delivering part of a stack leaves the rest on its own cost basis',
+  )
+  const emptied = deliverContract(load, carried.id)
+  check(
+    emptied.state.costBasis[carried.commodityId] === undefined,
+    'delivering the last of a line drops its cost basis',
+  )
+
+  // --- deadlines -------------------------------------------------------------------
+  const doomed: GameState = {
+    ...second.state,
+    day: carried.deadlineDay + 1,
+    cargo: { ...second.state.cargo, [carried.commodityId]: carried.quantity },
+  }
+  const failed = settleContracts(doomed)
+  const logged = failed.log.filter((l) => l.icon === '❌' && l.text.includes(carried.quantity.toString()))
+  check(
+    !failed.contracts.some((c) => c.id === carried.id) &&
+      failed.stats.contractsFailed === doomed.stats.contractsFailed + 1,
+    'an undelivered contract fails the day after its deadline',
+  )
+  check(logged.length === 1, `the failure is logged once (${logged.length} lines)`)
+  check(
+    failed.credits === doomed.credits && JSON.stringify(failed.cargo) === JSON.stringify(doomed.cargo),
+    'a missed deadline costs the fee and nothing else',
+  )
+  const again = settleContracts(failed)
+  check(
+    again.stats.contractsFailed === failed.stats.contractsFailed && again.log.length === failed.log.length,
+    'settlement is idempotent: a resolved contract cannot fail twice',
+  )
+
+  // The clock is the game's, so `waitDay` and `travel` are what move it.
+  let waited = acceptContract({ ...start, credits: 1_000_000 }, offers[1].id).state
+  const waitedId = activeContracts(waited)[0].id
+  for (let d = 0; d < 60; d++) waited = waitDay(waited).state
+  check(
+    !waited.contracts.some((c) => c.id === waitedId) && waited.stats.contractsFailed === 1,
+    'waiting a day past the deadline fails the contract exactly once',
+  )
+
+  // A jump that spans the deadline settles once, on arrival, not once per day.
+  const far = activeContracts(second.state)[0]
+  const trip = Math.max(
+    ...PLANETS.filter((p) => p.id !== origin).map((p) => distanceBetween(PLANET_MAP[origin]!, p)),
+  )
+  const jumping: GameState = {
+    ...second.state,
+    day: far.deadlineDay - 1,
+    credits: 1_000_000,
+    contracts: [{ ...far, deadlineDay: far.deadlineDay - 1 }],
+  }
+  const arrived = completeJump(travel(jumping, far.destinationPlanetId))
+  check(
+    arrived.state.stats.contractsFailed === jumping.stats.contractsFailed + 1,
+    'a jump across the deadline fails the contract once',
+  )
+  check(
+    arrived.state.log.filter((l) => l.icon === '❌').length === 1,
+    'the failure is logged once, not once per day in transit',
+  )
+  check(trip > 1, 'the jump under test really did span more than one day')
+
+  // Offers are local: the board at A is not a standing offer at B.
+  const elsewhere: GameState = { ...start, planetId: PLANETS[1].id }
+  check(
+    availableContracts(elsewhere).every((c) => c.originPlanetId === PLANETS[1].id),
+    'the board only ever offers work struck at the planet you are at',
+  )
+  const arrivedAtB = completeJump(travel({ ...start, credits: 1_000_000 }, PLANETS[1].id))
+  check(
+    availableContracts(arrivedAtB.state).every((c) => c.originPlanetId === PLANETS[1].id) &&
+      arrivedAtB.state.contracts.filter((c) => c.status === 'available' && c.originPlanetId === origin)
+        .length === 0,
+    'arriving somewhere new draws a fresh local board and drops the old offers',
+  )
+
+  // A fee is fixed when the contract is drawn, not re-priced by the market later.
+  const repriced: GameState = {
+    ...second.state,
+    day: second.state.day + 2,
+    markets: {
+      ...second.state.markets,
+      [carried.originPlanetId]: {
+        ...second.state.markets[carried.originPlanetId],
+        [carried.commodityId]: {
+          ...second.state.markets[carried.originPlanetId][carried.commodityId],
+          price: 1,
+        },
+      },
+    },
+  }
+  check(
+    repriced.contracts.filter((c) => c.id === carried.id).every((c) => c.reward === carried.reward),
+    'a market crash does not re-price a contract already on the books',
+  )
+
+  // --- save state -------------------------------------------------------------------
+  const v4 = migrate({ ...start, version: 4 } as unknown as GameState)
+  check(
+    v4.contracts.length === 0 && v4.version === GAME_VERSION,
+    `a v4 save migrates to v${GAME_VERSION} with no contracts on the books`,
+  )
+  check(
+    migrate(asSave({ stats: {} as never })).stats.contractRevenue === 0 &&
+      migrate(asSave({ stats: {} as never })).stats.contractsCompleted === 0 &&
+      migrate(asSave({ stats: {} as never })).stats.contractsFailed === 0,
+    'a save with no contract stats loads with all three counters at zero',
+  )
+  check(
+    throwsWith({ stats: { ...start.stats, contractRevenue: NaN } }, 'stats.contractRevenue'),
+    'an unreadable fee total is reported rather than quietly zeroed',
+  )
+  const keeper = offers[0]
+  const repairedContracts = migrate(
+    asSave({
+      contracts: [
+        keeper,
+        { ...keeper }, // duplicate id
+        { ...keeper, id: 'x', destinationPlanetId: 'nowhere' },
+        { ...keeper, id: 'y', destinationPlanetId: keeper.originPlanetId }, // same planet
+        { ...keeper, id: 'z', quantity: 0 },
+        { ...keeper, id: 'w', quantity: 2.5 },
+        { ...keeper, id: 'v', reward: -5 },
+        { ...keeper, id: 'u', deadlineDay: keeper.offeredDay }, // no room to deliver
+        { ...keeper, id: 't', status: 'completed' }, // already resolved
+        { ...keeper, id: 's', status: 'failed' },
+        { ...keeper, id: 'r', commodityId: 'unobtainium' },
+        { ...keeper, id: 'q' }, // no id at all: rebuilt
+        'not even an object',
+      ],
+    }),
+  )
+  const keptIds = repairedContracts.contracts.map((c) => c.id)
+  check(
+    repairedContracts.contracts.length === 2 &&
+      repairedContracts.contracts[0].id === keeper.id &&
+      new Set(keptIds).size === 2,
+    `a damaged contract list keeps only the usable contracts, with unique ids (${repairedContracts.contracts.length} kept)`,
+  )
+  check(
+    repairedContracts.contracts.every(
+      (c) =>
+        Number.isInteger(c.quantity) &&
+        c.quantity >= 1 &&
+        c.reward >= 1 &&
+        c.deadlineDay > c.offeredDay &&
+        (c.status === 'available' || c.status === 'accepted'),
+    ),
+    'a kept contract is one the client and the game can both act on',
+  )
+  check(
+    throwsWith({ contracts: 'oops' }, 'contracts must be an array'),
+    'a structurally impossible contract list is reported',
+  )
+}
+
 // Quantity guards. NaN fails every `qty <= 0` and `cost > credits` comparison,
 // so before the fix it sailed straight through and wrote NaN into cargo and
 // cost basis - corruption that would then be saved.
@@ -1290,6 +1726,380 @@ check(
   buyFor(2.9).cost === buyFor(2).cost && sellFor(2.9).proceeds === sellFor(2).proceeds,
   'a fractional quantity fills whole units',
 )
+
+// --- travel encounters ---------------------------------------------------------
+// A jump is no longer guaranteed to end docked, so these check the parts that
+// have to be true whichever way a journey goes: that the roll is a function of
+// the flight, that fuel is charged once at departure, that nothing else can be
+// done until the encounter is answered, and that answering it lands the ship
+// exactly where a quiet jump would have.
+{
+  // Definitions are data and must stay well formed: every type reachable through
+  // the lookup map, every choice usable as an id.
+  const types = TRAVEL_ENCOUNTERS.map((e) => e.type)
+  check(
+    TRAVEL_ENCOUNTERS.length >= 10 &&
+      new Set(types).size === TRAVEL_ENCOUNTERS.length &&
+      types.every((t) => TRAVEL_ENCOUNTER_MAP[t] === TRAVEL_ENCOUNTER_MAP[t]) &&
+      types.every((t) => TRAVEL_ENCOUNTER_MAP[t]?.type === t),
+    `every encounter type is defined once and reachable by lookup (${TRAVEL_ENCOUNTERS.length} types)`,
+  )
+  check(
+    TRAVEL_ENCOUNTERS.every(
+      (e) =>
+        e.name.length > 0 &&
+        e.description.length > 0 &&
+        e.choices.length >= 2 &&
+        new Set(e.choices.map((c) => c.id)).size === e.choices.length &&
+        e.choices.every(
+          (c) => c.id.length > 0 && c.label.length > 0 && c.detail.length > 0 && c.log.length > 0,
+        ),
+    ),
+    'every encounter offers at least two described, uniquely identified choices',
+  )
+
+  // The roll is a pure function of the flight, so it cannot be rerolled by
+  // reloading, and it is not the same encounter on the same hop forever.
+  const probe = { ...createNewGame(), credits: 100_000 }
+  const rolled = travel(probe, 'drax')
+  check(
+    !rolled.error &&
+      (rolled.encounter === undefined ||
+        rolled.encounter.id === travel(probe, 'drax').encounter?.id),
+    'the same jump rolls the same encounter every time it is attempted',
+  )
+  const distinct = new Set<string>()
+  let triggered = 0
+  let flights = 0
+  for (let day = 0; day < 400; day++) {
+    for (const other of PLANETS.filter((p) => p.id !== probe.planetId)) {
+      const at = { ...probe, day, stats: { ...probe.stats, tripsMade: flights } }
+      const jump = travel(at, other.id)
+      if (jump.error) continue
+      flights++
+      if (jump.encounter) {
+        triggered++
+        distinct.add(jump.encounter.id)
+      }
+    }
+  }
+  const rate = triggered / flights
+  check(
+    rate >= 0.15 && rate <= 0.35,
+    `roughly one journey in four meets something (${(rate * 100).toFixed(1)}% of ${flights} jumps)`,
+  )
+  check(
+    distinct.size > 10,
+    `the same route is not stuck with one encounter (${distinct.size} distinct across ${flights} jumps)`,
+  )
+
+  // Fuel is charged once, at departure, and the rest of the jump cannot be flown
+  // twice: the ship is mid-air, so a second jump is refused outright.
+  const broke = { ...probe, credits: 50_000 }
+  const fare = travelCost(broke, 'drax')
+  const first = travel(broke, 'drax')
+  check(
+    !first.error &&
+      first.state.credits === broke.credits - fare &&
+      first.state.stats.tripsMade === broke.stats.tripsMade + 1,
+    'an interrupted jump still charges fuel and counts the trip once, at departure',
+  )
+  const again = travel(first.state, 'pelagos')
+  check(
+    again.error !== undefined && again.state === first.state,
+    'a jump already under way cannot be started again',
+  )
+
+  // Fly real journeys until one comes out interrupted, so the interrupted case is
+  // asserted rather than hoped for. Trips are flown back and forth with the clock
+  // advanced a day at a time, exactly as a player would.
+  let flying: GameState | null = null
+  let walked = 0
+  for (let d = 0; d < 400 && flying === null; d++) {
+    const at = { ...broke, day: broke.day + d, stats: { ...broke.stats, tripsMade: d } }
+    const jumped = travel(at, d % 2 === 0 ? 'drax' : 'pelagos')
+    walked++
+    if (!jumped.error && jumped.encounter) flying = jumped.state
+  }
+  check(flying !== null, `a real journey was interrupted by something (in ${walked} jumps)`)
+  if (flying?.pendingEncounter) {
+    const pending = flying.pendingEncounter
+    check(
+      flying.planetId === pending.originPlanetId &&
+        flying.planetId !== pending.destinationPlanetId,
+      'the ship is still at the origin it left: no arrival until the encounter is answered',
+    )
+    check(
+      flying.day > pending.departureDay &&
+        flying.day < pending.departureDay + pending.journeyDays,
+      `part of the flight is behind the player (day ${flying.day - pending.departureDay} of ${pending.journeyDays})`,
+    )
+
+    const options = encounterOptions(flying, pending)
+    check(
+      options.length >= 2 && options.some((o) => !o.blockedReason),
+      'there is always a way through: at least one choice is open',
+    )
+
+    // A payment the player cannot make is refused outright, and takes nothing
+    // with it when it is.
+    const poor: GameState = { ...flying, credits: 1 }
+    const pricey = options.find((o) => o.cost > 0)
+    if (pricey) {
+      const refused = resolveEncounter(poor, pricey.id)
+      check(
+        refused.error !== undefined &&
+          refused.state === poor &&
+          encounterOptions(poor, pending).find((o) => o.id === pricey.id)?.blockedReason !== undefined,
+        'a choice the player cannot afford is refused, and the button says so',
+      )
+    }
+
+    // What a button quotes is what it charges, first time and after a reload.
+    const open = options.find((o) => !o.blockedReason)!
+    const settled = resolveEncounter(flying, open.id)
+    check(
+      settled.error === undefined && settled.result !== undefined && settled.log !== undefined,
+      'an open choice resolves, with something to say and something to log',
+    )
+    const done = settled.state
+    check(
+      done.planetId === pending.destinationPlanetId &&
+        done.pendingEncounter === null &&
+        done.day === pending.departureDay + pending.journeyDays + (settled.result?.daysDelta ?? 0),
+      `resolution lands the ship at the destination on day ${pending.departureDay + pending.journeyDays + (settled.result?.daysDelta ?? 0)}, with the encounter spent`,
+    )
+    check(
+      done.credits === flying.credits + (settled.result?.creditsDelta ?? 0),
+      'the outcome is applied exactly once, to the credits it says',
+    )
+    const claimed = resolveEncounter(done, open.id)
+    check(
+      claimed.error !== undefined && claimed.state === done,
+      'a spent encounter cannot be claimed twice',
+    )
+    check(
+      done.stats.tripsMade === flying.stats.tripsMade,
+      'arriving does not count the trip a second time',
+    )
+  }
+
+  // Every type, resolved deliberately instead of waited for: a flight seeded per
+  // type and choice, so each outcome branch is exercised on demand and the
+  // invariants can be checked against all of them at once.
+  const ORIGIN = 'eden'
+  const TARGET = 'drax'
+  /** A three-day hop, one day of it already flown when the encounter fires. */
+  const JOURNEY_DAYS = 3
+  const departure = { ...probe, planetId: ORIGIN, credits: 20_000 } as GameState
+  const fired = advanceDay(departure)
+  const flight = (type: TravelEncounterType, choice: string) => {
+    const pending: PendingEncounter = {
+      id: encounterId(`probe:${type}:${choice}`),
+      type,
+      originPlanetId: ORIGIN,
+      destinationPlanetId: TARGET,
+      departureDay: departure.day,
+      triggerDay: fired.day,
+      journeyDays: JOURNEY_DAYS,
+      fuelCost: travelCost(broke, TARGET),
+    }
+    return { pending, state: { ...fired, pendingEncounter: pending } }
+  }
+  const bag = (cargo: Partial<Record<CommodityId, number>>): Record<string, number> =>
+    cargo as unknown as Record<string, number>
+  const outcomes: {
+    label: string
+    state: GameState
+    result: EncounterResult & {
+      cargoDelta?: Record<string, number>
+      cargoBasis?: Record<string, number>
+    }
+  }[] = []
+  for (const def of TRAVEL_ENCOUNTERS) {
+    for (const choice of def.choices) {
+      const { state } = flight(def.type, choice.id)
+      const resolved = resolveEncounter(state, choice.id)
+      if (resolved.error || !resolved.result) {
+        check(false, `every choice of every encounter can be taken (${def.type}/${choice.id})`)
+        continue
+      }
+      outcomes.push({ label: `${def.type}/${choice.id}`, state: resolved.state, result: resolved.result })
+    }
+  }
+  check(
+    outcomes.length === TRAVEL_ENCOUNTERS.reduce((n, e) => n + e.choices.length, 0),
+    `every choice of every encounter can be taken (${outcomes.length} outcomes)`,
+  )
+  // What the same flight would have looked like with nothing in the way: the same
+  // journey, the same clock, and nothing an encounter could have touched. Every
+  // market comparison below is against this rather than against the state the
+  // ship left, because flying *does* move markets - that is the clock, not the
+  // encounter.
+  const flightReference = (days: number) => {
+    let ref = departure
+    for (let i = 0; i < days; i++) ref = advanceDay(ref)
+    return ref
+  }
+  const quietReference = flightReference(JOURNEY_DAYS)
+  for (const o of outcomes) {
+    const bad =
+      o.state.credits !== 20_000 + (o.result.creditsDelta ?? 0) ||
+      o.state.credits < 0 ||
+      o.state.day !== probe.day + 3 + (o.result.daysDelta ?? 0) ||
+      o.state.planetId !== TARGET ||
+      o.state.pendingEncounter !== null
+    if (bad) {
+      check(
+        false,
+        `${o.label}: charged ${o.state.credits - 20_000} of ${o.result.creditsDelta ?? 0}, on day ${
+          o.state.day - departure.day
+        } of ${JOURNEY_DAYS + (o.result.daysDelta ?? 0)}, at ${o.state.planetId}`,
+      )
+    }
+  }
+  check(
+    outcomes.every(
+      (o) =>
+        o.state.credits === 20_000 + (o.result.creditsDelta ?? 0) &&
+        o.state.credits >= 0 &&
+        o.state.day === departure.day + JOURNEY_DAYS + (o.result.daysDelta ?? 0) &&
+        o.state.planetId === TARGET &&
+        o.state.pendingEncounter === null,
+    ),
+    'every outcome charges and delays exactly what it reports, and lands the ship',
+  )
+  const capacity = cargoCapacityAtLevel(probe.ship.cargoLevel)
+  check(
+    outcomes.every((o) =>
+      Object.entries(o.result.cargoDelta ?? {}).every(
+        ([id, q]) => bag(o.state.cargo)[id] === (o.result.cargoDelta?.[id] ?? 0) && q <= capacity,
+      ),
+    ),
+    'no outcome can put more in the hold than the hold holds',
+  )
+  check(
+    outcomes.every((o) =>
+      Object.keys(o.result.cargoDelta ?? {}).every((id) => (bag(o.state.costBasis)[id] ?? 0) >= 0),
+    ),
+    'every awarded line carries a non-negative cost basis',
+  )
+  // Salvage was found, not bought: it enters the hold at a basis of zero, so net
+  // worth does not jump because the player picked something up.
+  const salvaged = outcomes.filter((o) => o.label === 'derelict-pod/salvage')
+  check(
+    salvaged.length === 1 &&
+      salvaged.every((o) => {
+        const id = Object.keys(o.result.cargoDelta ?? {})[0]
+        return (
+          id !== undefined &&
+          bag(o.state.costBasis)[id] === 0 &&
+          o.result.unitsBought === undefined &&
+          o.state.stats.tradingProfit === probe.stats.tradingProfit
+        )
+      }),
+    'salvage enters the hold free and books no trading profit',
+  )
+  // A convoy pallet is bought, so it carries the price paid and counts as goods
+  // bought - and takes the price from the market being left, at a discount.
+  const convoys = outcomes.filter((o) => o.label === 'merchant-convoy/buy')
+  check(
+    convoys.length === 1 &&
+      convoys[0].result.unitsBought !== undefined &&
+      (convoys[0].result.cargoBasis ?? {})[Object.keys(convoys[0].result.cargoDelta ?? {})[0]!] ===
+        -convoys[0].result.creditsDelta! / convoys[0].result.unitsBought! &&
+      convoys[0].state.stats.goodsBought === probe.stats.goodsBought + convoys[0].result.unitsBought!,
+    'a convoy pallet is booked at the price paid, and counted as goods bought',
+  )
+  // A market is re-stocked by the clock, not by a crate falling out of a pod:
+  // an encounter moves no market that the same flight, unencountered, would not
+  // have moved anyway.
+  check(
+    outcomes
+      .filter((o) => (o.result.daysDelta ?? 0) === 0)
+      .every((o) => JSON.stringify(o.state.markets) === JSON.stringify(quietReference.markets)),
+    'an encounter moves no market that the same journey would not have moved',
+  )
+
+  // A quiet jump is still the original one: fuel, every day of the flight, and
+  // an arrival in a single call.
+  let quiet: { from: GameState; jump: ReturnType<typeof travel> } | null = null
+  const seeking: GameState = { ...probe, stats: { ...probe.stats, tripsMade: 900 } }
+  for (let d = 0; d < 200 && quiet === null; d++) {
+    const from = { ...seeking, day: seeking.day + d }
+    for (const target of ['drax', 'pelagos']) {
+      const jump = travel(from, target)
+      if (jump.error || jump.encounter) continue
+      quiet = { from, jump }
+      break
+    }
+  }
+  check(quiet !== null, 'the sample quiet jump really was quiet')
+  if (quiet) {
+    check(
+      quiet.jump.state.planetId === quiet.jump.toId &&
+        quiet.jump.state.day === quiet.from.day + (quiet.jump.days ?? 0) &&
+        quiet.jump.state.day === quiet.jump.arriveDay,
+      'an uninterrupted jump lands in one call, on the day it promised',
+    )
+    check(
+      quiet.jump.state.credits === quiet.from.credits - (quiet.jump.fuelCost ?? 0),
+      'an uninterrupted jump is charged fuel and nothing else',
+    )
+  }
+
+
+  // A save taken mid-jump keeps the flight, so a reload resumes the same
+  // encounter on the same day rather than rerolling or quietly arriving.
+  const midFlight = flying
+  if (midFlight?.pendingEncounter) {
+    const round = migrate(JSON.parse(JSON.stringify(midFlight)))
+    const choiceId = encounterOptions(round, round.pendingEncounter!).find((o) => !o.blockedReason)!.id
+    check(
+      JSON.stringify(round.pendingEncounter) === JSON.stringify(midFlight.pendingEncounter) &&
+        resolveEncounter(round, choiceId).result?.message ===
+          resolveEncounter(midFlight, choiceId).result?.message,
+      'a reloaded save resumes the same encounter with the same outcome',
+    )
+    const dropped = migrate({
+      ...midFlight,
+      pendingEncounter: { ...midFlight.pendingEncounter, type: 'no-longer-a-thing' as never },
+    })
+    check(dropped.pendingEncounter === null, 'a save naming an encounter this build lost lands anyway')
+  }
+
+  // The same for a save with nothing in flight, and for one that predates
+  // encounters entirely: a v5 save has no such field, and must load as a ship
+  // sitting quietly at a planet rather than as a half-flown jump.
+  const clean = migrate(JSON.parse(JSON.stringify(createNewGame())) as GameState)
+  check(
+    clean.pendingEncounter === null && clean.version === GAME_VERSION,
+    `a fresh save carries no flight in progress (v${clean.version})`,
+  )
+  const withoutField = { ...createNewGame() } as Partial<GameState>
+  delete withoutField.pendingEncounter
+  const v5 = migrate({ ...withoutField, version: 5 } as unknown as GameState)
+  check(
+    v5.pendingEncounter === null && v5.version === GAME_VERSION,
+    `a v5 save migrates to v${GAME_VERSION} docked, not mid-jump`,
+  )
+  // A flight with a broken journey - days flown longer than the flight, a
+  // departure in the future - is dropped rather than stranding the ship.
+  const brokenFlight = migrate({
+    ...createNewGame(),
+    pendingEncounter: {
+      id: 'enc@nonsense',
+      type: 'derelict-pod',
+      originPlanetId: 'eden',
+      destinationPlanetId: 'drax',
+      departureDay: 9,
+      triggerDay: 40,
+      journeyDays: 3,
+      fuelCost: 40,
+    },
+  })
+  check(brokenFlight.pendingEncounter === null, 'a flight that could not have happened is dropped')
+}
 
 console.log(failures === 0 ? 'ALL CHECKS PASSED' : `${failures} CHECKS FAILED`)
 process.exit(failures === 0 ? 0 : 1)

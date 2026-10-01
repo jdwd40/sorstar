@@ -6,12 +6,20 @@ interface ModalProps {
   /** Id of the element naming this dialog. Required: an unnamed modal is
    *  announced by screen readers as just "dialog". */
   labelledBy: string
+  /**
+   * Whether Escape or a click on the backdrop closes it. Defaults to true.
+   *
+   * An interrupted journey's encounter is the one dialog that must not be
+   * dismissable: the ship is between planets, and there is no state to return
+   * to until the player has chosen. It still traps focus either way.
+   */
+  dismissable?: boolean
 }
 
 const FOCUSABLE =
   'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
 
-export default function Modal({ onClose, children, labelledBy }: ModalProps) {
+export default function Modal({ onClose, children, labelledBy, dismissable = true }: ModalProps) {
   const dialogRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -23,7 +31,7 @@ export default function Modal({ onClose, children, labelledBy }: ModalProps) {
 
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        onClose()
+        if (dismissable) onClose()
         return
       }
       if (e.key !== 'Tab') return
@@ -55,7 +63,7 @@ export default function Modal({ onClose, children, labelledBy }: ModalProps) {
       document.body.style.overflow = prevOverflow
       previouslyFocused?.focus()
     }
-  }, [onClose])
+  }, [onClose, dismissable])
 
   return (
     <div
@@ -64,7 +72,11 @@ export default function Modal({ onClose, children, labelledBy }: ModalProps) {
       aria-modal="true"
       aria-labelledby={labelledBy}
     >
-      <div className="absolute inset-0 bg-slate-950/80 backdrop-blur-sm modal-fade" onClick={onClose} />
+      {dismissable ? (
+        <div className="absolute inset-0 bg-slate-950/80 backdrop-blur-sm modal-fade" onClick={onClose} />
+      ) : (
+        <div className="absolute inset-0 bg-slate-950/80 backdrop-blur-sm modal-fade" />
+      )}
       <div
         ref={dialogRef}
         tabIndex={-1}

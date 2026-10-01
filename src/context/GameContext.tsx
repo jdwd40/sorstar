@@ -1,12 +1,20 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import type { CommodityId, GameState, ShipUpgradeType } from '../types/game'
+import type { CommodityId, GameState, LogEntry, ShipUpgradeType } from '../types/game'
 import { createGameStore, type AuthUser, type GameStore, type SessionLostReason } from '../services/gameStore'
 import { buyCommodity, cargoBasisAt, sellCommodity, waitDay as waitDayService } from '../services/marketService'
 import { marketEventLogEntries } from '../services/marketEventService'
-import { travel as travelService, type TravelResult } from '../services/travelService'
+import { travel as travelService, resolveEncounter as resolveEncounterService, type TravelResult } from '../services/travelService'
+import { describeEncounter } from '../services/encounterService'
 import { buyUpgrade, describeUpgrade } from '../services/playerService'
-import { createNewGame, netWorth, withLog } from '../services/gameService'
-import { COMMODITY_MAP, GAME_TARGET_NET_WORTH, PLANET_MAP } from '../data/gameData'
+import { createNewGame, netWorth } from '../services/gameService'
+import {
+  acceptContract as acceptContractService,
+  deliverContract as deliverContractService,
+  describeAcceptance,
+  describeContract,
+  settleContracts,
+} from '../services/contractService'
+import { COMMODITY_MAP, GAME_TARGET_NET_WORTH, PLANET_MAP, withLog } from '../data/gameData'
 
 export interface ActionResult {
   ok: boolean
@@ -35,7 +43,10 @@ interface GameContextValue {
   sell: (commodityId: CommodityId, qty: number) => ActionResult
   waitDay: () => ActionResult
   travel: (destId: string) => ActionResult
+  resolveEncounter: (choiceId: string) => ActionResult
   travelUpgrade: (type: ShipUpgradeType) => ActionResult
+  acceptContract: (contractId: string) => ActionResult
+  deliverContract: (contractId: string) => ActionResult
 }
 
 const GameContext = createContext<GameContextValue | undefined>(undefined)
@@ -70,6 +81,14 @@ function logProfit(profit: number): string {
 function atPlanet(state: GameState): string {
   const planet = PLANET_MAP[state.planetId]
   return planet ? ` at ${planet.name}` : ''
+}
+
+/** Loads a save and settles the contract book against the day it was left on. */
+function loadedState(loaded: GameState): GameState {
+  // `settleContracts` first: a save can be left on the last day of a deadline,
+  // and an expired contract has to fail before the player is shown the board.
+  // It never writes a new save, so this stays a pure read path.
+  return stampProgress(settleContracts(loaded))
 }
 
 export function GameProvider({ children }: { children: ReactNode }) {
@@ -107,7 +126,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
         const loaded = await store.load()
         if (!active || token !== loadTokenRef.current) return
         if (loaded) {
-          const stamped = stampProgress(loaded)
+          const stamped = loadedState(loaded)
           gameRef.current = stamped
           setGame(stamped)
         } else {
@@ -167,7 +186,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
       const loaded = await store.load()
       if (token !== loadTokenRef.current) return
       if (loaded) {
-        const stamped = stampProgress(loaded)
+        const stamped = loadedState(loaded)
         gameRef.current = stamped
         setGame(stamped)
       } else {
@@ -254,6 +273,9 @@ export function GameProvider({ children }: { children: ReactNode }) {
     commit({ ...gameRef.current, stats: { ...gameRef.current.stats, victorySeen: true } })
   }, [commit])
 
+/** A log line before it is stamped with the day `withLog` writes it on. */
+type LogLine = Omit<LogEntry, 'day'>
+
 /**
  * The shared spine of every player action: guard against "no active game", run
  * a pure service function, surface its error verbatim, then commit the result
@@ -264,23 +286,39 @@ export function GameProvider({ children }: { children: ReactNode }) {
  * copy-pasted across buy/sell/wait/travel/upgrade, and they had already drifted:
  * the buy and sell logs were each deriving trade totals from a listed price
  * instead of the credits that actually moved.
+ *
+ * A log may be more than one entry: an interrupted jump ends with two facts
+ * worth keeping - what the encounter did, and that the ship got there.
+ *
+ * `allowMidJump` exists for the one action that may run while a journey is
+ * interrupted. Every other action is refused, because the ship is between
+ * planets: trading, waiting, upgrading or setting off again would all be acts
+ * from two places at once. That refusal is here rather than in the buttons so
+ * it holds whatever the UI does.
  */
 const apply = useCallback(
   <R extends { state: GameState; error?: string }>(
     run: (state: GameState) => R,
-    log: (before: GameState, after: GameState, result: R) => { icon: string; text: string },
+    log: (before: GameState, after: GameState, result: R) => LogLine | LogLine[],
     done: (after: GameState, result: R) => { message: string; info?: TravelResult },
+    allowMidJump = false,
   ): ActionResult => {
     const before = gameRef.current
     if (!before) return { ok: false, message: 'No active game.' }
+    if (!allowMidJump && before.pendingEncounter) {
+      return { ok: false, message: 'An encounter is unresolved mid-jump — deal with it first.' }
+    }
     const result = run(before)
     if (result.error) return { ok: false, message: result.error }
-    const { icon, text } = log(before, result.state, result)
+    const entries = log(before, result.state, result)
     // Market events turn over as part of the same action, so they are logged
     // alongside it rather than by each caller. Scoped to the planet the player
     // ends up at, which is what keeps a long jump from reporting on every
     // disruption that opened and closed in the sector behind them.
-    let next = withLog(result.state, icon, text)
+    let next = result.state
+    for (const entry of Array.isArray(entries) ? entries : [entries]) {
+      next = withLog(next, entry.icon, entry.text)
+    }
     for (const entry of marketEventLogEntries(
       before.activeEvents,
       result.state.activeEvents,
@@ -355,13 +393,59 @@ const apply = useCallback(
     (destId: string): ActionResult =>
       apply(
         (state) => travelService(state, destId),
-        (_before, _after, r) => ({
-          icon: '🚀',
-          text: `Jumped ${r.distanceLy} ly from ${r.fromName} to ${r.toName} (${r.fuelCost} cr fuel, ${
-            r.days ?? 0
-          } day${(r.days ?? 0) > 1 ? 's' : ''}).`,
-        }),
-        (_after, r) => ({ message: `Arrived at ${r.toName}.`, info: r }),
+        (_before, _after, r) =>
+          r.encounter
+            ? {
+                // Interrupted: the ship has left, but the flight is not over, so
+                // this says where it was headed rather than where it got to.
+                icon: '🚀',
+                text: `Left ${r.fromName} for ${r.toName} (${r.distanceLy} ly, ${r.fuelCost} cr fuel).`,
+              }
+            : {
+                icon: '🚀',
+                text: `Jumped ${r.distanceLy} ly from ${r.fromName} to ${r.toName} (${r.fuelCost} cr fuel, ${
+                  r.days ?? 0
+                } day${(r.days ?? 0) > 1 ? 's' : ''}).`,
+              },
+        (_after, r) =>
+          r.encounter
+            ? { message: `Something is out there on the way to ${r.toName}.` }
+            : { message: `Arrived at ${r.toName}.`, info: r },
+      ),
+    [apply],
+  )
+
+  const resolveEncounter = useCallback(
+    (choiceId: string): ActionResult =>
+      apply(
+        (state) => resolveEncounterService(state, choiceId),
+        (before, _after, r) => {
+          // The encounter is read off the state *before* the choice: resolving it
+          // spends the record, so afterwards there is nothing left to describe.
+          const pending = before.pendingEncounter
+          const { title, icon } = pending
+            ? describeEncounter(pending)
+            : { title: 'Encounter', icon: '⚠️' }
+          const delay = r.result?.daysDelta ?? 0
+          const days = r.travel?.days ?? 0
+          return [
+            {
+              icon,
+              // One line for the whole thing, whichever way it went: what it
+              // was, what the player did, and what came of it.
+              text: `${title} — ${r.log ?? 'handled'}. ${r.result?.message ?? ''}`.trim(),
+            },
+            {
+              icon: '🚀',
+              text: `Arrived at ${r.travel?.toName} after ${days} day${
+                days === 1 ? '' : 's'
+              }${delay > 0 ? ` (${delay} lost to the encounter)` : ''}.`,
+            },
+          ]
+        },
+        (_after, r) => ({ message: r.result?.message ?? 'Encounter resolved.', info: r.travel }),
+        // The one action allowed while a journey is interrupted.
+        true,
       ),
     [apply],
   )
@@ -372,6 +456,56 @@ const apply = useCallback(
         (state) => buyUpgrade(state, type),
         (_before, _after, r) => ({ icon: '🧰', text: describeUpgrade(r) }),
         (_after, r) => ({ message: describeUpgrade(r) }),
+      ),
+    [apply],
+  )
+
+  const acceptContract = useCallback(
+    (contractId: string): ActionResult =>
+      apply(
+        (state) => acceptContractService(state, contractId),
+        (before) => {
+          const contract = before.contracts.find((c) => c.id === contractId)
+          if (!contract) return { icon: '📜', text: 'Accepted a contract.' }
+          return {
+            icon: '📜',
+            text: `Accepted ${describeContract(contract).title}: ${describeAcceptance(contract)}.`,
+          }
+        },
+        (_after, r) => {
+          // The accepted contract is still on the book, so the summary reads off
+          // the result rather than being threaded through the call.
+          const taken = r.state.contracts.find((c) => c.id === contractId)
+          return {
+            message: taken ? `On the books: ${describeAcceptance(taken)}` : 'Contract accepted.',
+          }
+        },
+      ),
+    [apply],
+  )
+
+  const deliverContract = useCallback(
+    (contractId: string): ActionResult =>
+      apply(
+        (state) => deliverContractService(state, contractId),
+        (before) => {
+          const contract = before.contracts.find((c) => c.id === contractId)
+          const title = contract ? describeContract(contract).title : 'Contract'
+          return {
+            icon: '✅',
+            // Read the fee off the contract rather than off the credits delta:
+            // the two agree today, but the contract is the promise and the log
+            // should report the promise being kept.
+            text: contract
+              ? `${title} delivered: ${describeAcceptance(contract)} (+${contract.reward} cr).`
+              : 'Contract delivered.',
+          }
+        },
+        (after) => ({
+          message: `Delivered. ${after.stats.contractsCompleted} contract${
+            after.stats.contractsCompleted === 1 ? '' : 's'
+          } completed.`,
+        }),
       ),
     [apply],
   )
@@ -400,7 +534,10 @@ const apply = useCallback(
       sell,
       waitDay,
       travel,
+      resolveEncounter,
       travelUpgrade,
+      acceptContract,
+      deliverContract,
     }),
     [
       game,
@@ -423,7 +560,10 @@ const apply = useCallback(
       sell,
       waitDay,
       travel,
+      resolveEncounter,
       travelUpgrade,
+      acceptContract,
+      deliverContract,
     ],
   )
 

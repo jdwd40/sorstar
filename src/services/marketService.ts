@@ -8,6 +8,7 @@ import type {
   Planet,
 } from '../types/game'
 import { COMMODITY_MAP, PLANET_MAP, cargoCapacityAtLevel, dailyUpkeep } from '../data/gameData'
+import { settleContracts } from './contractService'
 import { advanceMarketEvents, commodityEventScale } from './marketEventService'
 import { hashString } from '../utils/hash'
 
@@ -610,7 +611,11 @@ export function advanceDay(state: GameState): GameState {
 export function waitDay(state: GameState): { state: GameState; charged: number } {
   const charged = Math.min(dailyUpkeep(state.ship), state.credits)
   return {
-    state: { ...advanceDay(state), credits: state.credits - charged },
+    // A waited day is also the contract clock: deadlines are checked here rather
+    // than in a component, so `settleContracts` is reachable by the verify
+    // script. Waiting and jumping are the only two ways the day moves, so this
+    // and `travel` are the only two places a deadline can pass.
+    state: settleContracts({ ...advanceDay(state), credits: state.credits - charged }),
     charged,
   }
 }

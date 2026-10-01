@@ -1,16 +1,17 @@
-import type { Commodity, GameState, LogEntry } from '../types/game'
+import type { Commodity, GameState } from '../types/game'
 import {
   COMMODITIES,
   GAME_TARGET_NET_WORTH,
   GAME_VERSION,
-  LOG_LIMIT,
   PLANETS,
   STARTING_CREDITS,
   STARTING_PLANET,
   STARTING_SHIP,
   PLANET_MAP,
+  withLog,
 } from '../data/gameData'
 import { createMarkets, cargoBasisAt, saleValue } from './marketService'
+import { settleContracts } from './contractService'
 
 function emptyCargo() {
   return {
@@ -23,12 +24,6 @@ function emptyCargo() {
     luxury: 0,
     crystals: 0,
   }
-}
-
-export function withLog(state: GameState, icon: string, text: string): GameState {
-  const entry: LogEntry = { day: state.day, icon, text }
-  const log = [entry, ...state.log].slice(0, LOG_LIMIT)
-  return { ...state, log }
 }
 
 export function createNewGame(version = GAME_VERSION): GameState {
@@ -47,6 +42,13 @@ export function createNewGame(version = GAME_VERSION): GameState {
     // Day one is a quiet sector: the first event is drawn when the day advances,
     // so a new game opens on prices the player can reason about.
     activeEvents: [],
+    // Filled in by `settleContracts` below, which is also what tops the board
+    // back up as days pass. Day one already has a full board, so contracts are
+    // something the player finds rather than something they wait for.
+    contracts: [],
+    // No journey is under way in a new game. Non-null means a jump was
+    // interrupted and is waiting on an encounter.
+    pendingEncounter: null,
     stats: {
       tradingProfit: 0,
       goodsBought: 0,
@@ -57,11 +59,14 @@ export function createNewGame(version = GAME_VERSION): GameState {
       victory: false,
       victorySeen: false,
       victoryDay: null,
+      contractRevenue: 0,
+      contractsCompleted: 0,
+      contractsFailed: 0,
     },
     log: [],
   }
   const planetName = PLANET_MAP[STARTING_PLANET]?.name ?? STARTING_PLANET
-  return withLog(starter, '📡', `You dock at ${planetName} with ${STARTING_CREDITS} cr and a fresh hold.`)
+  return settleContracts(withLog(starter, '📡', `You dock at ${planetName} with ${STARTING_CREDITS} cr and a fresh hold.`))
 }
 
 /**

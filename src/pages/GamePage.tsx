@@ -4,6 +4,9 @@ import { useGame } from '../context/GameContext'
 import Layout from '../components/Layout'
 import MarketPanel from '../components/MarketPanel'
 import TravelPanel from '../components/TravelPanel'
+import ArrivalReport from '../components/ArrivalReport'
+import EncounterModal from '../components/EncounterModal'
+import ContractsPanel from '../components/ContractsPanel'
 import ShipPanel from '../components/ShipPanel'
 import LogPanel from '../components/LogPanel'
 import VictoryModal from '../components/VictoryModal'
@@ -13,14 +16,21 @@ import { cargoSaleValue, goalProgress, netWorth } from '../services/gameService'
 import { fmt, fmtMoney, fmtPct } from '../utils/format'
 import { sound } from '../utils/sound'
 import type { ActionResult } from '../context/GameContext'
+import type { TravelResult } from '../services/travelService'
 
-type Tab = 'market' | 'travel' | 'ship' | 'log'
+type Tab = 'market' | 'travel' | 'contracts' | 'ship' | 'log'
 
 type SoundKind = 'buy' | 'sell' | 'wait' | 'travel' | 'upgrade' | 'win' | 'error'
 
 interface Flash {
   message: string
   kind: 'ok' | 'error'
+}
+
+/** An arrival report, plus what happened on the way there if anything did. */
+interface Arrival {
+  info: TravelResult
+  note?: string
 }
 
 export default function GamePage() {
@@ -31,13 +41,17 @@ export default function GamePage() {
     sell,
     waitDay,
     travel,
+    resolveEncounter,
     travelUpgrade,
+    acceptContract,
+    deliverContract,
     resetGame,
     dismissVictory,
   } = useGame()
   const navigate = useNavigate()
   const [tab, setTab] = useState<Tab>('market')
   const [flash, setFlash] = useState<Flash | null>(null)
+  const [arrival, setArrival] = useState<Arrival | null>(null)
   const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const wasVictory = useRef(false)
 
@@ -98,6 +112,25 @@ export default function GamePage() {
     return res
   }
 
+  const showArrival = (info: TravelResult) => setArrival({ info })
+
+  /**
+   * Answers an encounter and, if the ship made it, shows where it landed.
+   *
+   * The report carries a line naming what happened in transit, because an
+   * arrival that quietly cost a day and a few hundred credits deserves to say so.
+   */
+  const handleEncounterResolved = (res: ActionResult) => {
+    if (!res.ok) {
+      sound.error()
+      flashMessage(res.message, 'error')
+      return
+    }
+    sound.travel()
+    flashMessage(res.message, 'ok')
+    if (res.info) setArrival({ info: res.info, note: res.message })
+  }
+
   const handleNewGame = () => {
     // Always confirm from the game screen too - a stray click on "Start new
     // game" at the victory screen must not silently erase the account save.
@@ -109,8 +142,9 @@ export default function GamePage() {
   const tabs: { id: Tab; label: string; icon: string }[] = [
     { id: 'market', label: 'Trade', icon: '🛒' },
     { id: 'travel', label: 'Travel', icon: '🛰️' },
+    { id: 'contracts', label: 'Contracts', icon: '📜' },
     { id: 'ship', label: 'Ship', icon: '🛸' },
-    { id: 'log', label: 'Log', icon: '📜' },
+    { id: 'log', label: 'Log', icon: '📋' },
   ]
 
   return (
@@ -225,6 +259,14 @@ export default function GamePage() {
           <TravelPanel
             game={game}
             travel={(id) => runAction(() => travel(id))}
+            onArrival={showArrival}
+          />
+        )}
+        {tab === 'contracts' && (
+          <ContractsPanel
+            game={game}
+            acceptContract={(id) => runAction(() => acceptContract(id), 'buy')}
+            deliverContract={(id) => runAction(() => deliverContract(id), 'sell')}
           />
         )}
         {tab === 'ship' && (
@@ -242,6 +284,29 @@ export default function GamePage() {
           game={game}
           onContinue={() => dismissVictory()}
           onNewGame={handleNewGame}
+        />
+      )}
+
+      {/*
+        Both of these sit above the tabs on purpose. An encounter can interrupt a
+        jump from any tab, and the player may well have switched away from Travel
+        before the animation finished, so the ship would otherwise be stuck
+        mid-jump behind a tab that can no longer be used.
+      */}
+      {game.pendingEncounter && (
+        <EncounterModal
+          game={game}
+          onChoose={(id) => resolveEncounter(id)}
+          onResolved={handleEncounterResolved}
+        />
+      )}
+
+      {arrival && (
+        <ArrivalReport
+          game={game}
+          info={arrival.info}
+          note={arrival.note}
+          onClose={() => setArrival(null)}
         />
       )}
     </Layout>

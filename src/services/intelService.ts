@@ -1,8 +1,8 @@
 import type { CommodityId, GameState } from '../types/game'
-import { COMMODITY_MAP, PLANETS, PLANET_MAP, cargoCapacityAtLevel } from '../data/gameData'
+import { COMMODITY_MAP, PLANETS, PLANET_MAP, cargoCapacityAtLevel, distanceBetween } from '../data/gameData'
 import { DAILY_PRICE_DRIFT, projectStock, quoteBuy, quoteSellForecast } from './marketService'
 import { commodityEventScale } from './marketEventService'
-import { distanceBetween, travelCost } from './travelService'
+import { travelCost } from './travelService'
 
 export interface TradeLead {
   commodityId: CommodityId
